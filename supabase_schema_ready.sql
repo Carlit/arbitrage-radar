@@ -560,4 +560,11 @@ using (
   public.tenant_has_alert_entitlement(tenant_id, entitled_via_tier)
 );
 
+create policy tenant_alert_access_update_member
+on public.tenant_alert_access
+for update
+to authenticated
+using (public.is_tenant_member(tenant_id))
+with check (public.is_tenant_member(tenant_id));
+
 commit;

@@ -435,10 +435,28 @@ def persist_market_alerts(supabase: Client, alert_rows: list[dict[str, Any]]) ->
     if not alert_rows:
         return 0
 
+    default_tenant_id = os.environ.get("DEFAULT_TENANT_ID")
+    if not default_tenant_id:
+        print("⚠️ DEFAULT_TENANT_ID non défini. Les alertes seront insérées globalement mais inaccessibles par RLS.")
+
     inserted = 0
     for batch in chunked(alert_rows, size=200):
-        supabase.table("market_alerts").insert(batch).execute()
-        inserted += len(batch)
+        # Insert market alerts and get the generated records back (to have their IDs)
+        response = supabase.table("market_alerts").insert(batch).execute()
+        inserted_alerts = response.data
+        inserted += len(inserted_alerts)
+
+        # Create access rows for the default tenant if configured
+        if default_tenant_id and inserted_alerts:
+            access_rows = [
+                {
+                    "tenant_id": default_tenant_id,
+                    "alert_id": alert["id"],
+                    "entitled_via_tier": alert["min_subscription_tier"],
+                }
+                for alert in inserted_alerts
+            ]
+            supabase.table("tenant_alert_access").insert(access_rows).execute()
 
     return inserted
 

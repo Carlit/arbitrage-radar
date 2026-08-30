@@ -12,20 +12,31 @@ export default async function DashboardPage() {
     redirect("/auth");
   }
 
-  // Récupération des informations de membership
+  // Récupération des informations de membership et du tenant actif via RLS
+  const { data: appUser } = await supabase
+    .from("app_users")
+    .select("default_tenant_id")
+    .eq("user_id", user.id)
+    .single();
+
+  const activeTenantId = appUser?.default_tenant_id;
+
   const { data: membership } = await supabase
     .from("tenant_memberships")
     .select("tenant_id, role")
     .eq("user_id", user.id)
-    .limit(1)
+    .eq("tenant_id", activeTenantId)
     .maybeSingle();
 
-  // Les alertes doivent être récupérées via RLS de manière standard.
-  // Pour l'instant, si le tenant_alert_access n'est pas rempli, cela renverra une liste vide.
+  // Récupération des alertes via RLS de manière standard, avec jointure sur tenant_alert_access
   const { data: alerts } = await supabase
     .from("market_alerts")
-    .select("*")
+    .select(`
+      *,
+      tenant_alert_access!inner(read_at, tenant_id)
+    `)
     .eq("status", "open")
+    .eq("tenant_alert_access.tenant_id", activeTenantId)
     .order("confidence_score", { ascending: false })
     .limit(12);
 
