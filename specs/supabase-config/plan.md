@@ -28,3 +28,12 @@ L'unique source de vérité pour le schéma sera le dossier `supabase/migrations
 - Lancement de `npx supabase db reset`.
 - Vérification que la commande s'exécute sans erreur.
 - Vérification (visuelle ou par script) que le frontend accepte la connexion avec `test@local.dev` et `test2@local.dev` et que la base est correctement initialisée et prête à recevoir des données.
+
+---
+
+## Leçons Apprises (Auth & Seed)
+Lors de l'écriture d'un script de seed impliquant `auth.users`, il est crucial de se rappeler que :
+1. **Hash Bcrypt** : Les mots de passe générés extérieurement ou modifiés à la main (`$2a$10$...`) peuvent échouer silencieusement lors du login si Supabase attend un coût spécifique (ex: `$2a$06$...`). **Toujours** générer un hash de seed via `select crypt('mon_mdp', gen_salt('bf'));` dans l'éditeur SQL de Supabase.
+2. **GoTrue et Identities** : Une ligne dans `auth.users` ne suffit pas pour s'authentifier par mot de passe. Il faut **impérativement** une entrée correspondante dans `auth.identities` (avec le champ `identity_data` contenant le `sub` et l'`email`).
+3. **Triggers concurrents** : Si des triggers insèrent des profils/tenants à la création d'un utilisateur, le script de seed doit utiliser `ON CONFLICT (...) DO UPDATE` pour réécraser les données orphelines, puis purger les tables annexes (ex: `tenants` fantômes) générées par le trigger.
+4. **Champs tokens NULL** : Il est recommandé de forcer les champs de token (`confirmation_token`, `recovery_token`, etc.) à `''` (chaîne vide) lors du seed pour éviter des erreurs internes de GoTrue.

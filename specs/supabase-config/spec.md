@@ -1,5 +1,7 @@
 # Spécification : Reproductibilité du schéma Supabase (CLI & Migrations)
 
+**Statut :** Fait
+
 ## 1. Quoi (Le besoin)
 Remplacer l'application manuelle des scripts SQL (`supabase_schema.sql`, `supabase_schema_ready.sql`, `supabase_auto_provisioning.sql`) par une structure de projet Supabase officielle et reproductible. Cela implique :
 - L'initialisation d'une configuration Supabase complète (`supabase/config.toml`).
@@ -20,6 +22,3 @@ Remplacer l'application manuelle des scripts SQL (`supabase_schema.sql`, `supaba
 ## 4. Hors périmètre
 - **Modification de la logique métier** : Aucune nouvelle table, aucune nouvelle policy RLS, aucune modification du script Python ou du frontend n'est prévue dans ce chantier. Le but est un refactoring iso-fonctionnel du déploiement de la base.
 - **Déploiement vers un projet Supabase distant (Cloud)** : Ce chantier se concentre sur la structure locale du projet et sa validation via la CLI locale. Le déploiement effectif sur le cloud Supabase de production fera l'objet d'un autre chantier.
-
-## 5. Statut
-- [x] Fait
