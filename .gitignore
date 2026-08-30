@@ -11,3 +11,7 @@ __pycache__/
 *.pyc
 .next/
 coverage/
+
+.env.billing
+.env.supabase-poc
+.env*
