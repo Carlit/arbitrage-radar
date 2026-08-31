@@ -19,6 +19,12 @@ export type BillingEvent =
       accountId: string;
       stripeCustomerId: string;
       raw: Stripe.Subscription;
+    }
+  | {
+      type: "payment.failed";
+      accountId: string;
+      stripeCustomerId: string;
+      raw: Stripe.Invoice;
     };
 
 export interface IdempotencyStore {

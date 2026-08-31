@@ -246,3 +246,166 @@ refactor :
   apparaissent.
 - **`portal.ts` livré sans consommateur** — aucune route/UI ne l'appelle dans ce chantier (hors
   périmètre de la demande), pur ajout de capacité au kit.
+
+---
+
+# Plan V2 (2026-08-31) — 3 nouvelles capacités
+
+Statut : validé — la seule ambiguïté réelle (type de `reason`) tranchée en `/clarify` (§10 de
+`spec.md`), l'autre point signalé (`discounts`/`trialPeriodDays`) résolu par recherche
+factuelle (aucun conflit Stripe documenté). Prêt pour `/tasks`.
+Référence : `spec.md` §9-§11.
+
+## V2.0 Décisions actées
+
+1. **`refunds.ts`** : nouveau module, `refundPayment(paymentIntentId, amount?, reason?)`,
+   wrapper direct de `stripe.refunds.create`. Aucun `accountId` — un remboursement se fait par
+   `paymentIntentId` seul, cohérent avec « aucun lien avec tenant ».
+2. **`reason`** typé `'duplicate' | 'fraudulent' | 'requested_by_customer'` (union littérale
+   Stripe) — confirmé en `/clarify`.
+3. **`createCheckoutSession`** : `trialPeriodDays?`/`discounts?` regroupés dans un **4ᵉ
+   paramètre optionnel `options`** plutôt que 2 paramètres positionnels supplémentaires — détail
+   et justification en V2.2.
+4. **`discounts`/`trialPeriodDays`** : passthrough indépendant, aucune logique d'interaction
+   (pas de conflit Stripe documenté entre les deux — cf. `spec.md` §10.1).
+5. **`invoice.payment_failed`** → événement générique `payment.failed`, même mécanisme exact
+   que `subscription.*` (résolution `accountId` via `customer.metadata`, idempotence, erreur si
+   metadata absente).
+6. **Aucune migration DB, aucun changement de schéma** — ces 3 ajouts sont strictement internes
+   au kit.
+7. **Aucun consommateur `web/` mis à jour dans ce chantier** — ni `refunds.ts`, ni les nouveaux
+   paramètres de `createCheckoutSession`, ni `payment.failed` n'ont de route/logique tenant
+   câblée côté produit (même statut que `portal.ts` en V1 — capacité livrée, pas branchée).
+   `route.ts`'s `onEvent` switch n'a pas de `default`/exhaustiveness check : un event
+   `payment.failed` reçu en prod sera silencieusement ignoré tant que personne ne l'ajoute au
+   switch — comportement sûr (pas de crash), mais à garder en tête, pas un oubli caché (cf.
+   V2.6 Risques).
+
+## V2.1 `refunds.ts`
+
+```ts
+export function createRefundsModule(stripe: Stripe) {
+  async function refundPayment(
+    paymentIntentId: string,
+    amount?: number,
+    reason?: Stripe.RefundCreateParams.Reason,
+  ): Promise<Stripe.Refund> {
+    return stripe.refunds.create({
+      payment_intent: paymentIntentId,
+      ...(amount !== undefined ? { amount } : {}),
+      ...(reason !== undefined ? { reason } : {}),
+    });
+  }
+
+  return { refundPayment };
+}
+```
+`Stripe.RefundCreateParams.Reason` est le type déjà exposé par le SDK Stripe lui-même (union
+littérale des 3 valeurs) — pas un type inventé par le kit, même logique que le ré-export
+`Stripe` existant (V1 §8). Câblé dans `index.ts` : `refunds: createRefundsModule(stripe)`.
+
+## V2.2 `createCheckoutSession` — options
+
+```ts
+interface CreateCheckoutSessionOptions {
+  trialPeriodDays?: number;
+  discounts?: Stripe.Checkout.SessionCreateParams.Discount[];
+}
+
+async function createCheckoutSession(
+  priceId: string,
+  accountId: string,
+  metadata: Record<string, string> = {},
+  options: CreateCheckoutSessionOptions = {},
+): Promise<Stripe.Checkout.Session> {
+  const customer = await stripe.customers.create({ metadata: { account_id: accountId } });
+
+  return stripe.checkout.sessions.create({
+    mode: "subscription",
+    customer: customer.id,
+    client_reference_id: accountId,
+    line_items: [{ price: priceId, quantity: 1 }],
+    metadata,
+    ...(options.trialPeriodDays !== undefined
+      ? { subscription_data: { trial_period_days: options.trialPeriodDays } }
+      : {}),
+    ...(options.discounts !== undefined ? { discounts: options.discounts } : {}),
+  });
+}
+```
+**Décision d'implémentation signalée** (pas dans la demande initiale) : `trialPeriodDays` et
+`discounts` sont regroupés dans un objet `options` (4ᵉ paramètre), pas ajoutés comme 2
+paramètres positionnels supplémentaires après `metadata`. Justification : évite d'avoir à
+passer `undefined` positionnellement pour `metadata` quand on veut seulement `discounts` sans
+metadata custom ; cohérent avec le pattern déjà établi (`createBillingKit(config)`). Aucun
+appelant existant dans `web/` (le follow-up T13 « route de Checkout Session » n'a jamais été
+implémenté) — zéro risque de régression sur un appel existant.
+
+## V2.3 `webhook.ts` — `invoice.payment_failed`
+
+Ajout dans `mapStripeEventToBillingEvent` :
+```ts
+case "invoice.payment_failed": {
+  const invoice = event.data.object as Stripe.Invoice;
+  const stripeCustomerId =
+    typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
+
+  if (!stripeCustomerId) {
+    return null;
+  }
+
+  const accountId = await resolveAccountId(stripe, stripeCustomerId);
+
+  return { type: "payment.failed", accountId, stripeCustomerId, raw: invoice };
+}
+```
+`types.ts` — nouvelle branche de l'union `BillingEvent` :
+```ts
+| { type: "payment.failed"; accountId: string; stripeCustomerId: string; raw: Stripe.Invoice }
+```
+Même comportement d'erreur que `subscription.*` si `customer.metadata.account_id` absent
+(`MissingAccountIdError`, propagée, adaptateur → `500`, retry Stripe). Même passage par le
+store d'idempotence (aucun changement dans `webhook.ts` au niveau dispatch — la nouvelle branche
+suit le chemin déjà générique).
+
+## V2.4 Sécurité / RLS / multi-tenant
+
+N/A — aucune nouvelle table, aucune colonne, aucun accès Supabase dans ces 3 ajouts. Le kit
+reste sans notion de tenant (`refunds.ts` n'a même pas de `accountId`). Rien à revoir côté RLS.
+
+## V2.5 Validation de non-régression
+
+Reprendre le script T14 existant (7 scénarios déjà validés + revalidation `can_access_alert`)
+tel quel pour confirmer qu'aucune régression n'a été introduite sur les 4 événements/fonctions
+existants, puis ajouter :
+1. `refundPayment` : appel avec mock Stripe, vérifie que `stripe.refunds.create` reçoit
+   `payment_intent`, `amount` (si fourni) et `reason` (si fourni) correctement, et que l'appel
+   sans `amount`/`reason` ne les inclut pas du tout dans la requête (pas de `undefined` explicite
+   envoyé à Stripe).
+2. `createCheckoutSession` avec `options.trialPeriodDays` : vérifie
+   `subscription_data.trial_period_days` dans l'appel à `stripe.checkout.sessions.create`.
+3. `createCheckoutSession` avec `options.discounts` : vérifie `discounts` transmis tel quel.
+4. `createCheckoutSession` sans `options` (comportement V1) : vérifie qu'aucune régression —
+   toujours aucun `subscription_data`/`discounts` dans l'appel, résultat identique à avant.
+5. Mapping `invoice.payment_failed` → `payment.failed`, avec `customer.metadata.account_id`
+   présent (succès) et absent (`MissingAccountIdError`, même test que T6c en V1).
+6. Test réel via Stripe CLI si possible (`stripe trigger invoice.payment_failed`,
+   `stripe trigger charge.refunded` n'est pas un remboursement déclenché par nous — pour tester
+   `refundPayment` en conditions réelles, il faudra appeler la fonction directement contre un
+   `PaymentIntent` de test existant, pas via `stripe trigger` qui ne simule pas un appel sortant
+   de notre côté).
+
+## V2.6 Risques / dette explicitement signalée
+
+- **`payment.failed` non consommé côté `web/`** (V2.0 point 7) — le switch `onEvent` de
+  `route.ts` n'a pas de branche pour ce nouveau type et n'est pas exhaustif au sens TypeScript
+  (pas de `never` check) : un vrai paiement échoué en prod ne déclenchera **aucune action**
+  (pas de passage en `past_due`, pas de notification) tant qu'une tâche de suivi explicite ne
+  câble pas cette logique côté produit. À tracer comme tâche de suivi, pas un détail — un
+  paiement qui échoue silencieusement sans que le tenant repasse `past_due` est exactement le
+  genre de trou que `stripe-billing` visait à combler à l'origine.
+- **`refunds.ts` et les nouveaux paramètres de checkout n'ont aucun test Stripe CLI réel** —
+  contrairement aux 4 événements existants (bouclé le 2026-08-31), `refundPayment` n'est
+  testable en conditions réelles qu'en l'appelant directement (pas via `stripe trigger`), et les
+  nouveaux paramètres de `createCheckoutSession` n'ont pas de consommateur pour les exercer
+  au-delà des tests par mock.

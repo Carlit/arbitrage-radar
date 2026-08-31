@@ -1,10 +1,16 @@
 import type Stripe from "stripe";
 
+export interface CreateCheckoutSessionOptions {
+  trialPeriodDays?: number;
+  discounts?: Stripe.Checkout.SessionCreateParams.Discount[];
+}
+
 export function createCheckoutModule(stripe: Stripe) {
   async function createCheckoutSession(
     priceId: string,
     accountId: string,
     metadata: Record<string, string> = {},
+    options: CreateCheckoutSessionOptions = {},
   ): Promise<Stripe.Checkout.Session> {
     // Un nouveau Customer est créé à chaque appel (pas de recherche/déduplication —
     // dette assumée, cf. plan.md §2 : un checkout abandonné puis retenté peut laisser
@@ -19,6 +25,10 @@ export function createCheckoutModule(stripe: Stripe) {
       client_reference_id: accountId,
       line_items: [{ price: priceId, quantity: 1 }],
       metadata,
+      ...(options.trialPeriodDays !== undefined
+        ? { subscription_data: { trial_period_days: options.trialPeriodDays } }
+        : {}),
+      ...(options.discounts !== undefined ? { discounts: options.discounts } : {}),
     });
   }
 

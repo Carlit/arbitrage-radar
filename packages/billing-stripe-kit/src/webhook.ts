@@ -90,6 +90,20 @@ async function mapStripeEventToBillingEvent(
       };
     }
 
+    case "invoice.payment_failed": {
+      const invoice = event.data.object as Stripe.Invoice;
+      const stripeCustomerId =
+        typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
+
+      if (!stripeCustomerId) {
+        return null;
+      }
+
+      const accountId = await resolveAccountId(stripe, stripeCustomerId);
+
+      return { type: "payment.failed", accountId, stripeCustomerId, raw: invoice };
+    }
+
     default:
       return null;
   }

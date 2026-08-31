@@ -118,9 +118,92 @@ Deux points où la frontière kit/produit n'est pas tranchée par la demande ini
     `syncTenantSubscription`, `cancelTenantSubscription`, le store d'idempotence, et le
     dispatch complet de `webhook.ts` (transport Stripe mocké, logique métier et Supabase
     réels). RLS `can_access_alert` revalidée inchangée.
-- **Reste à faire (T13 bis / dette non bloquante déjà signalée en `stripe-billing`)** : test
-  HTTP réel via `stripe listen`/`stripe trigger` avec de vraies clés Stripe test — non
-  disponibles dans cet environnement d'implémentation, comme pour le chantier `stripe-billing`
-  à l'origine.
+- **Dette T13 bis (test HTTP réel via Stripe CLI) — bouclée le 2026-08-31** : `npm run dev` +
+  `stripe listen --forward-to localhost:3000/api/webhook/stripe` + `stripe trigger`, avec de
+  vraies clés Stripe test, exécutés en conditions réelles. Deux vrais bugs Turbopack trouvés et
+  corrigés au passage (jamais révélés par `tsc --noEmit` seul) : `turbopack.root`/
+  `outputFileTracingRoot` scopés à `web/` excluaient `packages/billing-stripe-kit` (sibling,
+  hors racine) de la résolution ; les imports relatifs internes du kit en `.js` (convention TS
+  NodeNext) ne sont pas remappés vers `.ts` par Turbopack. Un cas piège d'environnement identifié
+  et documenté pour référence : un mismatch entre le sandbox Stripe loggé côté CLI
+  (`stripe config --list`) et celui de la `STRIPE_SECRET_KEY` en `.env.local` produit des `500`
+  "No such customer" qui n'ont rien à voir avec le code (les deux doivent pointer sur le même
+  sandbox). Une fois corrigé : `checkout.session.completed` (ignoré si pas de `customer`),
+  `customer.subscription.updated`/`.deleted` (rejetés proprement si `customer.metadata.account_id`
+  absent, `500` + retry Stripe) et un scénario de succès complet bout-en-bout (Customer avec
+  metadata + moyen de paiement de test attaché + subscription forcée à `app_tier=pro` →
+  tenant passé en `pro`/`active` en base) ont tous été validés.
 - `web/.env.local.example` reste à compléter avec `STRIPE_WEBHOOK_SECRET` si ce n'est pas déjà
   fait (déjà présent depuis `stripe-billing`, vérifié inchangé).
+
+## 9. Extension V2 (2026-08-31) — 3 nouvelles capacités
+
+Demande faite après livraison, test et validation complète de la V1 (§8 ci-dessus, déjà en
+`main`). Cette section documente l'ajout, pas une réécriture de ce qui précède.
+
+### 9.1 `refunds.ts` — `refundPayment(paymentIntentId, amount?, reason?)`
+
+Nouveau module, wrapper direct de `stripe.refunds.create`. Aucun lien avec `accountId`/tenant :
+un remboursement se fait par `paymentIntentId`, Stripe n'a besoin de rien d'autre pour
+l'identifier. `amount?` optionnel (remboursement partiel, plus petite unité de devise,
+sémantique Stripe standard). Retourne `Promise<Stripe.Refund>`.
+
+### 9.2 `createCheckoutSession` — `trialPeriodDays?` et `discounts?`
+
+Deux paramètres optionnels supplémentaires, ajoutés à la signature existante
+`createCheckoutSession(priceId, accountId, metadata)`, passés tels quels à Stripe :
+- `trialPeriodDays?: number` → `subscription_data.trial_period_days`.
+- `discounts?: Stripe.Checkout.SessionCreateParams.Discount[]` → `discounts` (type Stripe
+  réutilisé directement, aucune interprétation côté kit).
+
+Aucune logique d'interaction entre les deux dans le kit — passthrough pur.
+
+### 9.3 `webhook.ts` — écoute de `invoice.payment_failed`
+
+Même mécanisme que les événements `subscription.*` existants : `accountId` résolu via
+`customer.metadata.account_id` (même appel `stripe.customers.retrieve`, même comportement si
+absent — `MissingAccountIdError`, `500`, retry Stripe côté adaptateur), même passage par le
+store d'idempotence. Émet un événement générique `payment.failed` vers `onEvent`, avec l'objet
+`Stripe.Invoice` brut en `raw` — le kit n'interprète pas ce qu'il faut faire d'un paiement
+échoué, ça reste entièrement côté produit.
+
+## 10. Ambiguïtés identifiées avant `/plan` (V2) et décisions
+
+1. **Interaction `discounts` / `trialPeriodDays`** — vérifié par recherche (pas une supposition) :
+   Stripe interdit de combiner `discounts` avec `allow_promotion_codes` (paramètre que le kit
+   n'expose pas), mais ne documente **aucun** conflit entre `discounts` et
+   `subscription_data.trial_period_days` — ce sont deux paramètres orthogonaux. Pas de décision
+   à prendre : passthrough indépendant des deux, sans logique d'interaction. Source :
+   [stripe/stripe-node#2248](https://github.com/stripe/stripe-node/issues/2248).
+2. **Type du paramètre `reason` de `refundPayment`** — Stripe n'accepte que 3 valeurs pour
+   `refunds.create.reason` (`duplicate`, `fraudulent`, `requested_by_customer`), rejetées côté
+   API sinon. **Décision (`/clarify`)** : typé avec l'union littérale exacte de Stripe
+   (`reason?: 'duplicate' | 'fraudulent' | 'requested_by_customer'`), réutilisant le type que
+   Stripe expose déjà dans son SDK — même pattern que le ré-export `Stripe` existant (§8, écart
+   technique documenté). Erreur à la compilation si mal utilisé, aucune logique métier ajoutée.
+
+## 11. Statut (V2)
+
+- Spec mise à jour et clarifiée le 2026-08-31. Plan et tasks validés le même jour.
+- **Implémenté le 2026-08-31 (T17–T21 de `tasks.md`)** :
+  - `packages/billing-stripe-kit/src/refunds.ts` créé, câblé dans `index.ts`
+    (`kit.refunds.refundPayment`).
+  - `checkout.ts` : `createCheckoutSession` accepte un 4ᵉ paramètre optionnel `options`
+    (`trialPeriodDays?`, `discounts?`), backward-compatible (aucun appelant existant).
+  - `webhook.ts`/`types.ts` : `invoice.payment_failed` → événement générique `payment.failed`,
+    même mécanisme exact que `subscription.*` (résolution `accountId`, idempotence, erreur si
+    metadata absente).
+  - Aucun changement côté `web/` — confirmé par `tsc --noEmit` inchangé sur `web/` après ces
+    ajouts (T22/T23 restent des tâches de suivi non faites, cf. `plan.md` V2.6).
+- **Validation de non-régression (T20)** : les 9 scénarios V1 (script existant, mocks) rejoués
+  sans modification → tous passent. Les 7 scénarios T14 (DB réelle, stack Supabase local)
+  rejoués sans modification → tous passent, y compris la fidélité `subscription_current_period_ends_at`
+  sur annulation (le fix trouvé pendant l'implémentation V1). 9 nouveaux scénarios ajoutés pour
+  `refundPayment` (omission propre de `amount`/`reason`, passthrough correct),
+  `createCheckoutSession` (aucune régression sans `options`, `trialPeriodDays` seul, `discounts`
+  seul, les deux ensemble sans logique d'interaction), et `payment.failed` (mapping correct,
+  erreur si metadata absente, idempotence) — tous passent.
+- **Reste à faire, tracé explicitement (T22/T23, hors périmètre de ce chantier)** : aucune
+  route/UI côté `web/` ne consomme `refundPayment`, les nouvelles options de checkout, ou ne
+  réagit à `payment.failed` — capacités livrées côté kit, pas branchées côté produit. Un
+  paiement qui échoue réellement en prod ne déclenche aujourd'hui aucune action côté tenant.

@@ -149,3 +149,80 @@ validée le 2026-08-30, y compris le Customer orphelin accepté comme dette diff
 ## T16 — Mise à jour du statut de la spec
 - Après T1–T15, mettre à jour `spec.md` §8 avec le statut réel, conformément à
   `.trae/rules/project_rules.md`.
+
+---
+
+# Tâches V2 (2026-08-31) — 3 nouvelles capacités
+
+Référence : `spec.md` §9-§11 (clarifié), `plan.md` V2 (validé). T1–T16 ci-dessus déjà en
+production, testées via Stripe CLI réel (cf. `spec.md` §8) — ne pas les retoucher sauf
+régression détectée en T20.
+
+Statut : **T17–T21 implémentées et validées le 2026-08-31.** T22/T23 non faites
+(volontairement, suivi tracé).
+
+## T17 — `refunds.ts` : `refundPayment`
+- Nouveau fichier `packages/billing-stripe-kit/src/refunds.ts`, implémentation `plan.md` V2.1.
+- Câblé dans `index.ts` : `refunds: createRefundsModule(stripe)`.
+- **Test** : mock Stripe — `refundPayment("pi_123")` → `stripe.refunds.create` appelé avec
+  `{ payment_intent: "pi_123" }` seulement (pas de clé `amount`/`reason` présente, même en
+  `undefined` explicite). `refundPayment("pi_123", 500, "requested_by_customer")` → les 3
+  champs présents avec les bonnes valeurs.
+- **Test type** : `refundPayment("pi_123", 500, "invalid_reason" as any)` — confirmer que sans
+  le `as any`, TypeScript rejette une valeur hors de l'union littérale (`tsc --noEmit` doit
+  échouer sur un fichier de test dédié si on retire le cast — à vérifier manuellement, pas
+  committé tel quel).
+
+## T18 — `createCheckoutSession` : `options.trialPeriodDays` / `options.discounts`
+- Étendre la signature avec le 4ᵉ paramètre `options` (`plan.md` V2.2). `metadata` garde son
+  défaut `{}` existant — signature backward-compatible (aucun appelant existant dans `web/`,
+  vérifié en `plan.md` V2.2).
+- **Test — non-régression** : `createCheckoutSession("price_1", "acct_1", {})` (sans `options`,
+  comportement V1 exact) → même requête `stripe.checkout.sessions.create` qu'avant cet ajout
+  (rejouer le test T3 de la V1 tel quel).
+- **Test — nouveau** : `options.trialPeriodDays = 14` → `subscription_data.trial_period_days:
+  14` dans la requête. `options.discounts = [{ coupon: "XYZ" }]` → `discounts` transmis
+  identique. Les deux ensemble dans le même appel → les deux présents simultanément, aucune
+  erreur ni logique d'exclusion (conforme à `plan.md` V2.0 point 4).
+- **Statut : ✅ fait.** `CreateCheckoutSessionOptions` déclarée localement dans `checkout.ts`
+  (pas dans `types.ts`) et ré-exportée depuis `index.ts` — cohérent avec le fait que ce type
+  n'a de sens que pour `createCheckoutSession`, contrairement à `BillingEvent`/`IdempotencyStore`
+  qui sont partagés entre plusieurs modules.
+
+## T19 — `webhook.ts` : mapping `invoice.payment_failed` → `payment.failed`
+- `types.ts` : nouvelle branche `BillingEvent` (`plan.md` V2.3).
+- `webhook.ts` : nouveau `case` dans `mapStripeEventToBillingEvent`, même mécanisme que
+  `customer.subscription.*` (résolution `accountId` via `stripe.customers.retrieve`, erreur
+  `MissingAccountIdError` si `metadata.account_id` absent).
+- **Test** : event `invoice.payment_failed` avec `customer.metadata.account_id` présent →
+  `BillingEvent` de type `payment.failed`, `accountId`/`stripeCustomerId` corrects, `raw` = 
+  l'objet `Stripe.Invoice` complet. Même event avec metadata absente → `MissingAccountIdError`
+  levée, pas de `BillingEvent` retourné (même test que T6c en V1, adapté à ce type d'event).
+- **Test — idempotence** : rejouer le même `event.id` deux fois → `onEvent` appelé une seule
+  fois (même mécanisme que T7, aucune modification du dispatch nécessaire pour ce nouveau type).
+
+## T20 — Non-régression complète (V1 + V2)
+- Rejouer les 7 scénarios T14 existants tels quels (V1 doit rester identique).
+- Ajouter les scénarios T17/T18/T19 ci-dessus dans la même passe.
+- **Test** : `tsc --noEmit` sur le kit et sur `web/` (aucun changement attendu côté `web/`
+  puisque aucun consommateur n'est câblé dans ce chantier — à vérifier explicitement, pas
+  supposer).
+
+## T21 — Mise à jour du statut de la spec
+- Après T17–T20, mettre à jour `spec.md` §11 avec le statut réel.
+
+---
+
+## Suivi explicite (hors périmètre de ce chantier — tracé, pas fusionné silencieusement)
+
+## T22 — [FOLLOW-UP] Câblage produit de `payment.failed`
+- `web/app/api/webhook/stripe/route.ts` doit gérer le cas `payment.failed` dans son switch
+  `onEvent` (ex. passer `tenants.subscription_status` à `past_due`, notifier le tenant) — non
+  fait dans ce chantier (kit uniquement, cf. `plan.md` V2.0 point 7 et V2.6).
+- Sans cette tâche, un vrai paiement échoué en prod ne déclenche aucune action côté produit —
+  à ne pas considérer comme un détail mineur lors d'une revue future.
+
+## T23 — [FOLLOW-UP] Câblage produit de `refunds.ts` et des options de checkout
+- Aucune route/UI n'appelle `refundPayment` ni ne passe `trialPeriodDays`/`discounts` à
+  `createCheckoutSession` — capacités livrées, pas branchées (même statut que `portal.ts` en
+  V1, cf. T13/T23 côté `stripe-billing` pour le précédent historique de ce type de dette).
