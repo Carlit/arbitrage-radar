@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: process.cwd(),
   },
+  transpilePackages: ["billing-stripe-kit"],
 };
 
 export default nextConfig;
