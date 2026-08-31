@@ -104,6 +104,25 @@ export async function syncTenantSubscription(
   }
 }
 
+export async function markTenantPaymentFailed(stripeCustomerId: string): Promise<void> {
+  const supabaseAdmin = createSupabaseServiceRoleClient();
+
+  const { data, error } = await supabaseAdmin
+    .from("tenants")
+    .update({ subscription_status: "past_due" satisfies SubscriptionStatus })
+    .eq("stripe_customer_id", stripeCustomerId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    throw new Error(`Aucun tenant trouvé pour stripe_customer_id=${stripeCustomerId}.`);
+  }
+}
+
 export async function cancelTenantSubscription(
   stripeCustomerId: string,
   subscription: Stripe.Subscription,

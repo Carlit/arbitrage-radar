@@ -280,7 +280,8 @@ Référence : `plan.md` Plan V3 (décisions actées après clarification produit
 Ne résout que T22 (`payment.failed` → `route.ts`) ; `T23` reste explicitement non fait
 (justification à jour en `plan.md` V3.0 points 2–3 et dans les entrées T22/T23 ci-dessus).
 
-Statut : à faire.
+Statut : **T24 implémentée le 2026-08-31**, vérification partielle (choix explicite, cf.
+ci-dessous) — voir T25 pour le statut spec.
 
 ## T24 — `route.ts` : case `payment.failed` → `tenants.subscription_status = 'past_due'`
 - `web/lib/billing/tenant-sync.ts` : nouvelle fonction `markTenantPaymentFailed(stripeCustomerId)`
@@ -290,14 +291,28 @@ Statut : à faire.
   `subscription_current_period_ends_at` ne sont touchés (un `Stripe.Invoice` ne porte pas cette
   information, contrairement à un `Stripe.Subscription` — cf. `plan.md` V3.1).
 - `web/app/api/webhook/stripe/route.ts` : nouveau `case "payment.failed"` dans le switch
-  `onEvent`, appelle `markTenantPaymentFailed(event.stripeCustomerId)`.
-- **Test** : event `invoice.payment_failed` avec un tenant existant (`stripe_customer_id`
-  correspondant) → `subscription_status` passe à `'past_due'` en base, `subscription_tier` et
-  `subscription_current_period_ends_at` inchangés. Même event sans tenant correspondant → erreur
-  levée, `500` côté `route.ts` (retry Stripe), pas de crash silencieux ni de `200` trompeur.
-- **Test — non-régression** : rejouer les scénarios T14/T20 existants → aucun changement de
-  comportement sur `account.linked`/`subscription.*`.
-- **Test** : `tsc --noEmit` sur le kit et sur `web/`.
+  `onEvent`, appelle `markTenantPaymentFailed(event.stripeCustomerId)`. Ajout d'un `default` avec
+  vérification `never` explicite pour que le switch redevienne non-exhaustif à la compilation si
+  un futur type de `BillingEvent` est ajouté sans être géré ici.
+- **Statut : ✅ code écrit.** `tsc --noEmit` propre sur le kit et sur `web/`.
+- **Vérification choisie (décision explicite avec l'utilisateur, 2026-08-31)** : pas de nouvelle
+  suite de tests dans `web/` (qui n'en a aucune, contrairement au kit) pour ce changement d'une
+  seule colonne. `markTenantPaymentFailed` réutilise à l'identique le pattern de requête déjà
+  validé en conditions réelles par T14 pour `syncTenantSubscription`/`cancelTenantSubscription`
+  (même table `tenants`, même client `createSupabaseServiceRoleClient()`, même
+  `.eq("stripe_customer_id", ...).select("id").maybeSingle()` + erreur si `!data`) — seule la
+  colonne mise à jour diffère (`subscription_status` uniquement). Vérifié manuellement par
+  lecture directe de la migration (`subscription_status public.subscription_status not null
+  default 'trialing'`, table `tenants`) plutôt que par une exécution réelle.
+- **Non fait, dette explicite** : test contre une vraie base (T14/T20-style) ou via Stripe CLI +
+  serveur dev local (comme la dette T13 bis, déjà bouclée par ailleurs). Ce worktree n'a jamais eu
+  de `supabase/config.toml` — Docker et `npx supabase` (2.116.0) sont disponibles ici (contexte
+  différent de la limite "pas de clés Stripe test" déjà documentée), mais `supabase init` +
+  `supabase start` n'a pas été lancé pour ce chantier (jugé disproportionné pour un changement
+  d'une seule colonne suivant un pattern déjà validé). Le client Supabase n'est par ailleurs pas
+  typé contre un schéma généré ici (`createClient` sans generic `Database`) — un typo de nom de
+  colonne/table ne serait donc pas détecté par `tsc` non plus, seulement par une exécution réelle.
+  À faire par l'utilisateur en local s'il veut une vérification DB réelle avant mise en prod.
 - Dépend de T19 (le kit émet déjà `payment.failed`, en prod depuis `e85b828`).
 
 ## T25 — Mise à jour du statut de la spec

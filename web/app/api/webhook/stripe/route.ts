@@ -5,6 +5,7 @@ import { createSupabaseIdempotencyStore } from "@/lib/billing/idempotency-store"
 import {
   cancelTenantSubscription,
   linkTenantToCustomer,
+  markTenantPaymentFailed,
   syncTenantSubscription,
 } from "@/lib/billing/tenant-sync";
 
@@ -25,6 +26,14 @@ const kit = createBillingKit({
 
       case "subscription.cancelled":
         return cancelTenantSubscription(event.stripeCustomerId, event.raw);
+
+      case "payment.failed":
+        return markTenantPaymentFailed(event.stripeCustomerId);
+
+      default: {
+        const _exhaustive: never = event;
+        return _exhaustive;
+      }
     }
   },
 });

@@ -1,12 +1,14 @@
 # Spécification : Extraction du module de facturation Stripe en package réutilisable
 
 > **Statut (2026-08-31)** : V1 (T1–T16) et V2 (T17–T21) implémentées et testées côté kit —
-> détail en §8 et §11. **Dette ouverte non résolue : T22/T23.** `payment.failed`,
-> `refundPayment` et les options de checkout (`trialPeriodDays`/`discounts`) ne sont câblés
-> nulle part côté `web/app/api/webhook/stripe/route.ts` — capacités livrées par le kit, jamais
-> consommées côté produit. Concrètement : un paiement qui échoue réellement en prod aujourd'hui
-> ne déclenche aucune action côté tenant (pas de passage en `past_due`, pas de notification).
-> Détail en `tasks.md` T22/T23.
+> détail en §8 et §11. **T22 résolu (Plan V3, §12)** : `payment.failed` câblé côté
+> `web/app/api/webhook/stripe/route.ts`, passe `tenants.subscription_status` à `'past_due'`
+> (sans période de grâce — l'entitlement RLS ne l'accorde qu'à `trialing`/`active`, inchangé).
+> **`T23` reste une dette ouverte non résolue, avec justification informée** (pas un oubli) :
+> `refundPayment` n'a aucune UI/route admin où exister dans le produit actuel, et les options de
+> checkout (`trialPeriodDays`/`discounts`) n'ont pas de flux d'abonnement où s'insérer
+> (`createCheckoutSession` n'a toujours aucun appelant dans `web/`). Détail en §12 et
+> `plan.md` V3.0.
 
 ## 1. Quoi (Le besoin)
 
@@ -236,3 +238,43 @@ store d'idempotence. Émet un événement générique `payment.failed` vers `onE
   route/UI côté `web/` ne consomme `refundPayment`, les nouvelles options de checkout, ou ne
   réagit à `payment.failed` — capacités livrées côté kit, pas branchées côté produit. Un
   paiement qui échoue réellement en prod ne déclenche aujourd'hui aucune action côté tenant.
+
+## 12. Statut (V3 — câblage T22/T23)
+
+- Décisions actées avec l'utilisateur le 2026-08-31, chacune vérifiée sur le code réel avant
+  d'être tranchée (détail en `plan.md` Plan V3, `tasks.md` Tâches V3) :
+  1. `payment.failed` → `route.ts` : câblé, force `tenants.subscription_status` à `'past_due'`
+     sans période de grâce.
+  2. `refundPayment` : confirmé différé — aucune UI admin/support n'existe dans le produit
+     (`web/app/` n'a que landing/auth/dashboard/webhook), et le seul rôle du schéma (`app_role`)
+     est par tenant, pas un rôle staff plateforme.
+  3. Options de checkout (`trialPeriodDays`/`discounts`) : confirmées différées —
+     `createCheckoutSession` (T13) n'a toujours aucun appelant dans `web/`.
+- **Implémenté (T24)** : `web/lib/billing/tenant-sync.ts` — nouvelle fonction
+  `markTenantPaymentFailed(stripeCustomerId)`, même pattern que `syncTenantSubscription`/
+  `cancelTenantSubscription` (update conditionnel sur `stripe_customer_id`, erreur si tenant
+  introuvable), ne touche que `subscription_status`. `web/app/api/webhook/stripe/route.ts` :
+  nouveau `case "payment.failed"`, plus un `default` avec vérification `never` explicite pour
+  que le switch redevienne non-exhaustif à la compilation si un futur type de `BillingEvent`
+  n'est pas géré. `tsc --noEmit` propre sur le kit et sur `web/`.
+- **Revue structurelle, avec un point vérifié par exécution réelle** :
+  - Chemin complet tracé ligne par ligne (webhook Stripe → `route.ts` → `mapStripeEventToBillingEvent`
+    → `onEvent` → `markTenantPaymentFailed` → écriture Postgres) — aucun trou.
+  - Écrasement inconditionnel confirmé (aucune garde sur la valeur actuelle de
+    `subscription_status`) — n'élimine pas la race last-write-wins avec `subscription.updated`
+    en cas de webhooks concurrents (préexistante, pas introduite ni corrigée par ce chantier).
+  - Idempotence (T5–T8) s'applique génériquement à `payment.failed` sans code spécifique.
+    Distinction importante : une redélivrance Stripe du même `event.id` est dédupliquée (si le
+    traitement précédent a réussi jusqu'à `record()`) ; une nouvelle tentative de paiement
+    (dunning) génère un `event.id` différent, non dédupliqué, et réexécute le handler — attendu
+    et sans effet de bord (écriture idempotente vers la même valeur).
+  - **`subscription_is_entitled('past_due')` exécuté réellement** (conteneur Postgres jetable,
+    énum + fonction copiées telles quelles depuis la migration, pas réécrites de mémoire) →
+    retourne `false`, identique à `'canceled'`/`'unpaid'`/`'incomplete'`/`'incomplete_expired'`/
+    `'paused'` ; seuls `'trialing'`/`'active'` retournent `true`. Confirme qu'aucune grâce
+    n'existe pour `past_due`, conformément à la décision V3.0.1 — plus une supposition de lecture
+    de code, une observation.
+- **Non fait, dette explicite (inchangée)** : pas de test DB réel end-to-end (le worktree n'a
+  jamais eu de `supabase/config.toml`, `supabase init`/`start` jugé disproportionné pour ce
+  changement d'une colonne) ; pas de test HTTP réel via Stripe CLI. `T23` reste non fait dans
+  son intégralité (`refundPayment`, options de checkout) — cf. point 12.2/12.3 ci-dessus.
