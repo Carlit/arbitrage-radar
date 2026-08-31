@@ -19,3 +19,6 @@ supabase/snippets/
 
 supabase/.temp/
 supabase/snippets/
+
+# Fichiers d'exemple : documentent les variables requises sans secrets, doivent être commités.
+!.env*.example
