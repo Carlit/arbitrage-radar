@@ -1,9 +1,9 @@
 import Stripe from "stripe";
 
-import { createCheckoutModule } from "./checkout.js";
-import { createPortalModule } from "./portal.js";
-import { createWebhookModule, SignatureVerificationError, MissingAccountIdError } from "./webhook.js";
-import type { IdempotencyStore, OnBillingEvent } from "./types.js";
+import { createCheckoutModule } from "./checkout";
+import { createPortalModule } from "./portal";
+import { createWebhookModule, SignatureVerificationError, MissingAccountIdError } from "./webhook";
+import type { IdempotencyStore, OnBillingEvent } from "./types";
 
 export interface BillingKitConfig {
   stripeSecretKey: string;
@@ -25,7 +25,7 @@ export function createBillingKit(config: BillingKitConfig) {
 }
 
 export { SignatureVerificationError, MissingAccountIdError };
-export type { BillingEvent, IdempotencyStore, OnBillingEvent } from "./types.js";
+export type { BillingEvent, IdempotencyStore, OnBillingEvent } from "./types";
 
 // Ré-exporté pour que les consommateurs (ex. web/lib/billing/tenant-sync.ts) référencent le
 // même identifiant de type Stripe que celui utilisé par BillingEvent — sans workspace

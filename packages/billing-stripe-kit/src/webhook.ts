@@ -1,6 +1,6 @@
 import type Stripe from "stripe";
 
-import type { BillingEvent, IdempotencyStore, OnBillingEvent } from "./types.js";
+import type { BillingEvent, IdempotencyStore, OnBillingEvent } from "./types";
 
 export class SignatureVerificationError extends Error {
   constructor(message: string, readonly cause?: unknown) {
