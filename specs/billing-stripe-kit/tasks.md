@@ -158,8 +158,16 @@ Référence : `spec.md` §9-§11 (clarifié), `plan.md` V2 (validé). T1–T16 c
 production, testées via Stripe CLI réel (cf. `spec.md` §8) — ne pas les retoucher sauf
 régression détectée en T20.
 
-Statut : **T17–T21 implémentées et validées le 2026-08-31.** T22/T23 non faites
-(volontairement, suivi tracé).
+Statut : **T17–T21 implémentées le 2026-08-31.** T22/T23 non faites (volontairement, suivi
+tracé, dette ouverte — cf. bandeau de statut en tête de `spec.md`).
+
+**Correction de statut (2026-08-31, commit `7b1fbbf`)** : les validations T17-T20 ci-dessous
+avaient été décrites comme "testées" alors qu'aucune suite de tests n'était committée dans le
+dépôt (scénarios manuels non reproductibles). Une vraie suite automatisée existe désormais —
+`packages/billing-stripe-kit/src/{refunds,checkout,webhook,regression}.test.ts`, exécutée via
+`npm test` (`node --test`, mocks `node:test`, aucun nouveau framework). **21/21 tests verts**,
+`tsc --noEmit` propre sur le kit et sur `web/`. Détail des scénarios réels dans chaque tâche
+ci-dessous et dans `spec.md` §11.
 
 ## T17 — `refunds.ts` : `refundPayment`
 - Nouveau fichier `packages/billing-stripe-kit/src/refunds.ts`, implémentation `plan.md` V2.1.
@@ -168,10 +176,17 @@ Statut : **T17–T21 implémentées et validées le 2026-08-31.** T22/T23 non fa
   `{ payment_intent: "pi_123" }` seulement (pas de clé `amount`/`reason` présente, même en
   `undefined` explicite). `refundPayment("pi_123", 500, "requested_by_customer")` → les 3
   champs présents avec les bonnes valeurs.
-- **Test type** : `refundPayment("pi_123", 500, "invalid_reason" as any)` — confirmer que sans
-  le `as any`, TypeScript rejette une valeur hors de l'union littérale (`tsc --noEmit` doit
-  échouer sur un fichier de test dédié si on retire le cast — à vérifier manuellement, pas
-  committé tel quel).
+- **Test type — critère revu, infondé tel qu'écrit (2026-08-31)** : ce critère supposait que
+  `tsc --noEmit` rejette une valeur `reason` hors union sans `as any`. En écrivant
+  `refunds.test.ts`, constat que `Stripe.RefundCreateParams.Reason` (`stripe@22`) est défini
+  `'duplicate' | 'fraudulent' | 'requested_by_customer' | OtherString`, où
+  `OtherString = string & Record<never, never>` (échappatoire volontaire du SDK Stripe pour
+  accepter toute chaîne, forward-compat) — pas une union littérale stricte. Une valeur
+  arbitraire type-check donc sans erreur ; committer un `@ts-expect-error` dessus ferait échouer
+  la compilation (directive inutilisée). Documenté en commentaire dans `refunds.test.ts` à la
+  place. Ce n'est pas un bug du kit, mais une limite du typage upstream à connaître.
+- **Test — committé et vert** : `packages/billing-stripe-kit/src/refunds.test.ts` (3 tests) —
+  omission propre de `amount`/`reason`, passthrough des 3 champs, valeur de retour.
 
 ## T18 — `createCheckoutSession` : `options.trialPeriodDays` / `options.discounts`
 - Étendre la signature avec le 4ᵉ paramètre `options` (`plan.md` V2.2). `metadata` garde son
@@ -188,6 +203,9 @@ Statut : **T17–T21 implémentées et validées le 2026-08-31.** T22/T23 non fa
   (pas dans `types.ts`) et ré-exportée depuis `index.ts` — cohérent avec le fait que ce type
   n'a de sens que pour `createCheckoutSession`, contrairement à `BillingEvent`/`IdempotencyStore`
   qui sont partagés entre plusieurs modules.
+- **Test — committé et vert** : `packages/billing-stripe-kit/src/checkout.test.ts` (5 tests) —
+  rejeu du comportement V1 sans `options` (T3 d'origine), `trialPeriodDays` seul, `discounts`
+  seul, les deux ensemble.
 
 ## T19 — `webhook.ts` : mapping `invoice.payment_failed` → `payment.failed`
 - `types.ts` : nouvelle branche `BillingEvent` (`plan.md` V2.3).
@@ -200,6 +218,11 @@ Statut : **T17–T21 implémentées et validées le 2026-08-31.** T22/T23 non fa
   levée, pas de `BillingEvent` retourné (même test que T6c en V1, adapté à ce type d'event).
 - **Test — idempotence** : rejouer le même `event.id` deux fois → `onEvent` appelé une seule
   fois (même mécanisme que T7, aucune modification du dispatch nécessaire pour ce nouveau type).
+- **Test — committé et vert** : `packages/billing-stripe-kit/src/webhook.test.ts` (13 tests,
+  T5–T8 V1 rejoués + T19) — vérification de signature avec une vraie instance Stripe (HMAC
+  réelle via `generateTestHeaderString`, pas mockée), mapping de tous les types d'event
+  (`account.linked`, `subscription.*`, `payment.failed`), idempotence par `event.id`,
+  `MissingAccountIdError` si metadata absente.
 
 ## T20 — Non-régression complète (V1 + V2)
 - Rejouer les 7 scénarios T14 existants tels quels (V1 doit rester identique).
@@ -207,6 +230,18 @@ Statut : **T17–T21 implémentées et validées le 2026-08-31.** T22/T23 non fa
 - **Test** : `tsc --noEmit` sur le kit et sur `web/` (aucun changement attendu côté `web/`
   puisque aucun consommateur n'est câblé dans ce chantier — à vérifier explicitement, pas
   supposer).
+- **Test — committé et vert (2026-08-31, commit `7b1fbbf`)** :
+  `packages/billing-stripe-kit/src/regression.test.ts` (2 tests) — assemblage du kit
+  (`checkout`/`portal`/`refunds`/`webhook`) toujours correct après l'ajout V2, et une passe
+  combinée V1+V2 dans un même dispatch (`account.linked` + `subscription.updated` +
+  `payment.failed`, rejeu partiel pour vérifier l'idempotence par `event.id` indépendamment du
+  type d'event). **21/21 tests verts au total** sur les 4 fichiers de test du kit
+  (`refunds.test.ts` + `checkout.test.ts` + `webhook.test.ts` + `regression.test.ts`),
+  `tsc --noEmit` confirmé propre sur le kit et sur `web/` (aucune régression côté consommateur).
+- **Hors de portée, non simulé** : les 7 scénarios contre une vraie base Supabase locale +
+  Stripe CLI restent non rejoués — pas de clés Stripe test ni de stack Supabase locale démarrée
+  dans l'environnement où cette suite a été écrite (même limite que documentée plus haut pour
+  T1–T16).
 
 ## T21 — Mise à jour du statut de la spec
 - Après T17–T20, mettre à jour `spec.md` §11 avec le statut réel.

@@ -1,5 +1,13 @@
 # Spécification : Extraction du module de facturation Stripe en package réutilisable
 
+> **Statut (2026-08-31)** : V1 (T1–T16) et V2 (T17–T21) implémentées et testées côté kit —
+> détail en §8 et §11. **Dette ouverte non résolue : T22/T23.** `payment.failed`,
+> `refundPayment` et les options de checkout (`trialPeriodDays`/`discounts`) ne sont câblés
+> nulle part côté `web/app/api/webhook/stripe/route.ts` — capacités livrées par le kit, jamais
+> consommées côté produit. Concrètement : un paiement qui échoue réellement en prod aujourd'hui
+> ne déclenche aucune action côté tenant (pas de passage en `past_due`, pas de notification).
+> Détail en `tasks.md` T22/T23.
+
 ## 1. Quoi (Le besoin)
 
 Extraire la logique Stripe actuellement codée en dur dans `web/app/api/webhook/stripe/route.ts`
@@ -195,14 +203,35 @@ store d'idempotence. Émet un événement générique `payment.failed` vers `onE
     metadata absente).
   - Aucun changement côté `web/` — confirmé par `tsc --noEmit` inchangé sur `web/` après ces
     ajouts (T22/T23 restent des tâches de suivi non faites, cf. `plan.md` V2.6).
-- **Validation de non-régression (T20)** : les 9 scénarios V1 (script existant, mocks) rejoués
-  sans modification → tous passent. Les 7 scénarios T14 (DB réelle, stack Supabase local)
-  rejoués sans modification → tous passent, y compris la fidélité `subscription_current_period_ends_at`
-  sur annulation (le fix trouvé pendant l'implémentation V1). 9 nouveaux scénarios ajoutés pour
-  `refundPayment` (omission propre de `amount`/`reason`, passthrough correct),
-  `createCheckoutSession` (aucune régression sans `options`, `trialPeriodDays` seul, `discounts`
-  seul, les deux ensemble sans logique d'interaction), et `payment.failed` (mapping correct,
-  erreur si metadata absente, idempotence) — tous passent.
+- **Validation de non-régression (T20) — corrigée le 2026-08-31** : la mention initiale d'un
+  "script existant" pour les 9 scénarios V1 était inexacte — aucune suite de tests n'était
+  committée dans le dépôt avant ce jour, pour V1 comme pour V2 ; les passes précédentes étaient
+  des scénarios manuels non reproductibles. Une vraie suite automatisée existe désormais dans
+  `packages/billing-stripe-kit/src/` (`node --test`, mocks `node:test` — aucun nouveau
+  framework de test) :
+  - `refunds.test.ts` (T17, 3 tests) : omission propre de `amount`/`reason`, passthrough des 3
+    champs, valeur de retour.
+  - `checkout.test.ts` (T18, 5 tests) : rejeu du comportement V1 sans `options` (T3 d'origine),
+    `trialPeriodDays` seul, `discounts` seul, les deux ensemble.
+  - `webhook.test.ts` (T5–T8 rejoués + T19, 13 tests) : vérification de signature avec une
+    vraie instance Stripe (HMAC réelle via `generateTestHeaderString`, pas mockée), mapping de
+    tous les types d'event (`account.linked`, `subscription.*`, `payment.failed`), idempotence
+    par `event.id`, `MissingAccountIdError` si metadata absente.
+  - `regression.test.ts` (T20, 2 tests) : assemblage du kit (`checkout`/`portal`/`refunds`/
+    `webhook`) après l'ajout V2, passe combinée V1+V2 dans un même dispatch (idempotence par
+    `event.id` indépendante du type d'event).
+  - **21/21 tests verts**, `tsc --noEmit` propre sur le kit et sur `web/` (aucune régression
+    côté consommateur, confirmé, pas supposé).
+  - **Écart trouvé en écrivant les tests** : le critère de test type de T17 (tasks.md — `tsc`
+    doit rejeter une valeur hors union pour `reason` sans `as any`) est infondé. Le SDK Stripe
+    (`stripe@22`) définit `RefundCreateParams.Reason` avec un échappatoire
+    `OtherString = string & Record<never, never>` qui accepte n'importe quelle chaîne à la
+    compilation — ce n'est pas une union littérale stricte. Documenté en commentaire dans
+    `refunds.test.ts` plutôt que de committer un `@ts-expect-error` qui échouerait
+    (directive inutilisée). Ce n'est pas un bug du kit, mais une limite du typage upstream.
+  - **Hors de portée, comme documenté en tasks.md T14/T20** : les 7 scénarios contre une vraie
+    base Supabase locale + Stripe CLI restent non rejoués — pas de clés Stripe test ni de stack
+    Supabase locale démarrée dans l'environnement où cette suite a été écrite.
 - **Reste à faire, tracé explicitement (T22/T23, hors périmètre de ce chantier)** : aucune
   route/UI côté `web/` ne consomme `refundPayment`, les nouvelles options de checkout, ou ne
   réagit à `payment.failed` — capacités livrées côté kit, pas branchées côté produit. Un
