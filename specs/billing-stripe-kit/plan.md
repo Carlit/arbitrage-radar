@@ -409,3 +409,99 @@ existants, puis ajouter :
   testable en conditions réelles qu'en l'appelant directement (pas via `stripe trigger`), et les
   nouveaux paramètres de `createCheckoutSession` n'ont pas de consommateur pour les exercer
   au-delà des tests par mock.
+
+# Plan V3 (2026-08-31) — Câblage T22/T23
+
+Référence : `tasks.md` T22/T23 (suivi explicite, V2), `spec.md` (bandeau de statut). Décisions
+ci-dessous actées avec l'utilisateur après vérification du code réel — pas de suppositions.
+
+## V3.0 Décisions actées
+
+1. **`payment.failed` → `route.ts`** : le handler force `tenants.subscription_status` à
+   `'past_due'` directement, sans période de grâce. Constat vérifié avant décision :
+   `subscription_is_entitled()` (migration initiale, `supabase/migrations/20260830172129_initial_schema.sql`)
+   n'autorise que `'trialing'`/`'active'` — `past_due` coupe donc l'accès **immédiatement**, tout
+   comme `canceled` aujourd'hui. Il n'existe aucune grâce réelle au niveau RLS/entitlement, et ce
+   chantier n'en introduit pas. Autre nuance vérifiée : Stripe positionne généralement déjà lui-même
+   `subscription.status` à `past_due` lors d'un échec de paiement, et émet un
+   `customer.subscription.updated` déjà câblé depuis T1–T10 (`syncTenantSubscription`) — le
+   câblage de `payment.failed` est donc en partie défensif/redondant avec ce chemin existant, pas
+   le seul mécanisme qui produirait ce statut en pratique. Décision explicite malgré cette
+   redondance : le câblage direct reste plus fiable que de compter sur un événement Stripe
+   différent qui pourrait ne pas arriver dans tous les cas (ex. configuration Smart Retries qui
+   retarde le passage en `past_due` côté `Subscription`).
+2. **`refundPayment`** : reste sans point d'entrée produit dans ce chantier. Vérifié avant
+   décision : `web/app/` ne contient que landing, auth, dashboard et la route webhook — aucune
+   UI ni route admin/support. Le seul concept de rôle du schéma (`app_role`:
+   `owner`/`admin`/`member`) est un rôle **par tenant**, pas un rôle staff plateforme — construire
+   un point d'entrée nécessiterait d'abord ce chantier de rôle staff, hors périmètre ici. `T23`
+   reste donc en dette explicite pour cette partie, avec cette justification informée plutôt que
+   la mention générique précédente.
+3. **Options de checkout (`trialPeriodDays`/`discounts`)** : différées explicitement. Vérifié
+   avant décision : `createCheckoutSession`/`createPortalSession` (T13) n'ont strictement aucun
+   appelant dans `web/` — pas de pricing page, pas de bouton "S'abonner". Ajouter des options à
+   un appel qui n'existe nulle part n'a pas de sens produit. Repris uniquement quand un vrai flux
+   d'abonnement self-serve existera. `T23` reste donc aussi en dette explicite pour cette partie.
+
+Conséquence : ce chantier ne résout que le premier tiers de T22/T23 (`payment.failed`). `T23`
+dans son intégralité reste non fait à l'issue de ce chantier, mais avec une justification
+informée (vérifiée sur le code réel), pas juste "pas encore fait par manque de temps".
+
+## V3.1 `route.ts` — case `payment.failed`
+
+- `web/lib/billing/tenant-sync.ts` : nouvelle fonction `markTenantPaymentFailed(stripeCustomerId)`
+  — même pattern que `syncTenantSubscription`/`cancelTenantSubscription` (update conditionnel sur
+  `stripe_customer_id`, erreur levée si aucun tenant trouvé). Met à jour uniquement
+  `subscription_status` à `'past_due'` — ni `subscription_tier` ni
+  `subscription_current_period_ends_at` ne sont touchés : un `Stripe.Invoice` ne porte pas
+  l'information de fin de période courante (contrairement à un `Stripe.Subscription`), donc rien
+  de fiable à y recalculer.
+- `web/app/api/webhook/stripe/route.ts` : nouveau `case "payment.failed"` dans le switch
+  `onEvent`, appelle `markTenantPaymentFailed(event.stripeCustomerId)`.
+- **Pas de notification tenant** (email/in-app) dans ce chantier — vérifié avant décision :
+  aucune dépendance ni infrastructure d'envoi d'email/notification n'existe dans `web/`. Ajouter
+  ce mécanisme serait un chantier séparé (choix d'un provider, templates, etc.), pas une
+  extension mineure de celui-ci.
+
+## V3.2 `refunds.ts` / options de `createCheckoutSession` — confirmé non câblé
+
+Aucun code produit ajouté pour ces deux capacités dans ce chantier — cf. V3.0 points 2 et 3 pour
+la justification à jour, qui remplace la mention plus générique de `plan.md` V2.6 /
+`tasks.md` T23.
+
+## V3.3 Sécurité / RLS / multi-tenant
+
+Aucun changement à `subscription_is_entitled()` ni aux policies RLS existantes. Le comportement
+d'entitlement pour `past_due` reste identique à celui déjà en place pour
+`canceled`/`unpaid`/`incomplete`/etc. (accès refusé) — cf. `can_access_alert`,
+`can_access_tier_feature`.
+
+## V3.4 Validation de non-régression
+
+- Rejouer les scénarios T14/T20 existants tels quels (aucune régression attendue sur
+  `account.linked`/`subscription.*`).
+- Nouveau scénario : `invoice.payment_failed` avec `customer.metadata.account_id` correspondant
+  à un tenant existant → `tenants.subscription_status` passe à `'past_due'` en base, tier et
+  `subscription_current_period_ends_at` inchangés. Même event sans tenant correspondant
+  (`stripe_customer_id` orphelin côté `tenants`) → erreur levée, `500` côté `route.ts` (retry
+  Stripe), même pattern que `syncTenantSubscription`/`cancelTenantSubscription`.
+- `tsc --noEmit` sur le kit et sur `web/`.
+- Test HTTP réel via Stripe CLI : même limite déjà documentée (pas de clés Stripe test dans cet
+  environnement) — non fait ici, à faire par l'utilisateur en local s'il le souhaite (comme pour
+  la dette T13 bis, déjà bouclée par ailleurs).
+
+## V3.5 Risques / dette explicitement signalée (mise à jour)
+
+- **`T23` reste non fait, avec justification informée** (V3.0 points 2–3) plutôt que "pas encore
+  fait" : `refundPayment` n'a pas de surface produit où exister (pas d'UI admin/support, pas de
+  rôle staff plateforme) ; les options de checkout n'ont pas de flux d'abonnement où s'insérer
+  (pas de pricing page, pas de bouton "S'abonner"). Les deux restent des capacités livrées côté
+  kit, non consommées côté produit — à réévaluer quand ces surfaces existeront.
+- **`past_due` ne donne aucune grâce réelle** — décision actée en V3.0.1, pas un oubli. Si un
+  vrai mécanisme de grâce (accès maintenu N jours après échec de paiement) est souhaité un jour,
+  ça nécessite de modifier `subscription_is_entitled()` (migration SQL) en plus du câblage
+  applicatif — chantier séparé, non fait ici.
+- **Pas de notification tenant** — aucune infra email/notification n'existe dans le produit ;
+  `payment.failed` reste silencieux côté utilisateur final (visible seulement s'il consulte son
+  dashboard après coup, où RLS lui refuse déjà l'accès sans lui expliquer pourquoi). Signalé
+  comme risque UX, pas corrigé dans ce chantier.

@@ -256,8 +256,50 @@ ci-dessous et dans `spec.md` §11.
   fait dans ce chantier (kit uniquement, cf. `plan.md` V2.0 point 7 et V2.6).
 - Sans cette tâche, un vrai paiement échoué en prod ne déclenche aucune action côté produit —
   à ne pas considérer comme un détail mineur lors d'une revue future.
+- **Repris et câblé en Tâches V3 ci-dessous (T24)**, après clarification produit avec
+  l'utilisateur le 2026-08-31 : `past_due` sans période de grâce, pas de notification (aucune
+  infra email n'existe). Détail et justification en `plan.md` V3.0/V3.1.
 
 ## T23 — [FOLLOW-UP] Câblage produit de `refunds.ts` et des options de checkout
 - Aucune route/UI n'appelle `refundPayment` ni ne passe `trialPeriodDays`/`discounts` à
   `createCheckoutSession` — capacités livrées, pas branchées (même statut que `portal.ts` en
   V1, cf. T13/T23 côté `stripe-billing` pour le précédent historique de ce type de dette).
+- **Confirmé différé après clarification produit (2026-08-31)**, pas un oubli — pas de code
+  ajouté pour cette tâche en Tâches V3. Vérifié avant décision : `refundPayment` n'a aucune
+  surface produit où exister (`web/app/` n'a ni UI ni route admin/support, et le seul rôle du
+  schéma, `app_role`, est par tenant, pas un rôle staff plateforme) ; `createCheckoutSession`
+  (T13) n'a toujours strictement aucun appelant dans `web/` (pas de pricing page, pas de bouton
+  "S'abonner") — ajouter des options à un appel qui n'existe pas n'a pas de sens produit.
+  Détail en `plan.md` V3.0 points 2–3.
+
+---
+
+# Tâches V3 (2026-08-31) — Câblage T22/T23
+
+Référence : `plan.md` Plan V3 (décisions actées après clarification produit avec l'utilisateur).
+Ne résout que T22 (`payment.failed` → `route.ts`) ; `T23` reste explicitement non fait
+(justification à jour en `plan.md` V3.0 points 2–3 et dans les entrées T22/T23 ci-dessus).
+
+Statut : à faire.
+
+## T24 — `route.ts` : case `payment.failed` → `tenants.subscription_status = 'past_due'`
+- `web/lib/billing/tenant-sync.ts` : nouvelle fonction `markTenantPaymentFailed(stripeCustomerId)`
+  — même pattern que `syncTenantSubscription`/`cancelTenantSubscription` (update conditionnel
+  `WHERE stripe_customer_id = ...`, erreur levée si aucun tenant trouvé). Ne met à jour que
+  `subscription_status` (`'past_due'`) — ni `subscription_tier` ni
+  `subscription_current_period_ends_at` ne sont touchés (un `Stripe.Invoice` ne porte pas cette
+  information, contrairement à un `Stripe.Subscription` — cf. `plan.md` V3.1).
+- `web/app/api/webhook/stripe/route.ts` : nouveau `case "payment.failed"` dans le switch
+  `onEvent`, appelle `markTenantPaymentFailed(event.stripeCustomerId)`.
+- **Test** : event `invoice.payment_failed` avec un tenant existant (`stripe_customer_id`
+  correspondant) → `subscription_status` passe à `'past_due'` en base, `subscription_tier` et
+  `subscription_current_period_ends_at` inchangés. Même event sans tenant correspondant → erreur
+  levée, `500` côté `route.ts` (retry Stripe), pas de crash silencieux ni de `200` trompeur.
+- **Test — non-régression** : rejouer les scénarios T14/T20 existants → aucun changement de
+  comportement sur `account.linked`/`subscription.*`.
+- **Test** : `tsc --noEmit` sur le kit et sur `web/`.
+- Dépend de T19 (le kit émet déjà `payment.failed`, en prod depuis `e85b828`).
+
+## T25 — Mise à jour du statut de la spec
+- Après T24, mettre à jour le bandeau de statut en tête de `spec.md` et sa section dédiée avec
+  le résultat réel (T22 résolu, T23 confirmé différé avec justification informée).
