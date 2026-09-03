@@ -6,10 +6,14 @@
 > (sans période de grâce — l'entitlement RLS ne l'accorde qu'à `trialing`/`active`, inchangé).
 > **`T23` partiellement résolu (Plan V4, §13)** : le checkout self-serve est câblé (bouton
 > "Passer Pro" dans le dashboard → `createCheckoutSession` → Stripe Checkout hébergé → pages
-> `/billing/success`/`/billing/cancel`). **`refundPayment` reste une dette ouverte non résolue,
-> avec justification informée** (pas un oubli) : aucune UI/route admin n'existe dans le produit
-> actuel, et le seul rôle du schéma (`app_role`) est par tenant, pas un rôle staff plateforme —
-> reporté explicitement à un futur chantier "rôles et permissions avancées". Détail en §12/§13 et
+> `/billing/success`/`/billing/cancel`). **Risque connu, non corrigé : le bouton s'affiche même
+> pour un tenant déjà Pro/Elite** (le dashboard n'affiche aucune info d'abonnement) — relancer un
+> checkout crée une nouvelle Subscription Stripe sans vérifier d'abonnement préexistant, risque
+> concret de double facturation, pas seulement d'UX. **`refundPayment` reste une dette ouverte
+> non résolue, avec justification informée** (pas un oubli) : aucune UI/route admin n'existe dans le
+> produit actuel, et le seul rôle du schéma (`app_role`) est par tenant, pas un rôle staff
+> plateforme — reporté explicitement à un futur chantier "rôles et permissions avancées". Détail
+> en §12/§13 et
 > `plan.md` V3.0/V4.0.
 
 ## 1. Quoi (Le besoin)
@@ -314,8 +318,15 @@ store d'idempotence. Émet un événement générique `payment.failed` vers `onE
   verts** sur le kit.
 - **Non fait, dette explicite** : pas de test HTTP réel via Stripe CLI pour ce nouveau flux
   (même limite déjà documentée) ; pas de nouveau test `web/` pour `startTenantCheckout`/le
-  bouton (même niveau d'effort qu'en T24) ; pas de vérification que le tenant n'est pas déjà
-  Pro/Elite avant d'afficher le bouton (le dashboard n'affiche aucune information d'abonnement
-  aujourd'hui) ; pont manuel entre le `lookup_key` de `stripe_bootstrap_billing.mjs` et la
-  variable d'env `STRIPE_PRICE_PRO_ID`. **`refundPayment` reste sans point d'entrée produit** —
-  `T23` n'est donc résolu que pour sa partie checkout.
+  bouton (même niveau d'effort qu'en T24) ; pont manuel entre le `lookup_key` de
+  `stripe_bootstrap_billing.mjs` et la variable d'env `STRIPE_PRICE_PRO_ID`.
+  **`refundPayment` reste sans point d'entrée produit** — `T23` n'est donc résolu que pour sa
+  partie checkout.
+- **Risque de double souscription — pas de vérification d'abonnement existant avant d'afficher
+  le bouton** : le dashboard n'affiche aujourd'hui aucune information de `subscription_tier`/
+  `subscription_status`, donc un tenant déjà Pro/Elite voit quand même "Passer Pro" et peut
+  relancer un checkout. Rien ne l'empêche côté kit ou côté `web/` : `createCheckoutSession` crée
+  un nouveau `Customer` Stripe et une nouvelle Subscription active à chaque appel, sans vérifier
+  d'abonnement préexistant — risque concret de facturation en double sur le même tenant, pas
+  seulement un problème d'UX. Non corrigé dans ce chantier (cf. `plan.md` V4.6) — à traiter avant
+  toute mise en production réelle.

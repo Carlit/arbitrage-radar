@@ -382,9 +382,15 @@ Statut : **T26–T32 implémentées le 2026-09-03.**
   rejoués — **23/23 tests verts** sur le kit.
 - **Non fait, dette explicite** : pas de test HTTP réel via Stripe CLI pour ce nouveau flux
   (même limite déjà documentée pour T13 bis/T20/T24) ; pas de nouveau test `web/` pour
-  `startTenantCheckout`/le bouton (choix explicite, même niveau qu'en T24) ; pas de vérification
-  qu'un tenant déjà Pro/Elite ne revoit pas le bouton (le dashboard n'affiche aucune information
-  d'abonnement aujourd'hui, cf. `plan.md` V4.6).
+  `startTenantCheckout`/le bouton (choix explicite, même niveau qu'en T24).
+- **Risque de double souscription — pas de vérification d'abonnement existant avant d'afficher
+  le bouton** : le dashboard n'affiche aujourd'hui aucune information de `subscription_tier`/
+  `subscription_status`, donc un tenant déjà Pro/Elite voit quand même "Passer Pro" et peut
+  relancer un checkout. Stripe ne rejette pas cet appel — `createCheckoutSession` crée un nouveau
+  `Customer` à chaque fois (dette déjà connue depuis T3/V1) et une nouvelle Subscription active,
+  potentiellement facturée en double sur le même tenant, sans erreur ni garde-fou côté kit ou
+  côté `web/`. Pas corrigé dans ce chantier (cf. `plan.md` V4.6) — à traiter avant toute mise en
+  production réelle, pas un détail cosmétique.
 
 ## T32 — Mise à jour du statut de la spec
 - **Statut : ✅ fait.** Bandeau de statut en tête de `spec.md` et nouvelle section §13 avec le
