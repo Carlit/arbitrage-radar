@@ -505,3 +505,114 @@ d'entitlement pour `past_due` reste identique à celui déjà en place pour
   `payment.failed` reste silencieux côté utilisateur final (visible seulement s'il consulte son
   dashboard après coup, où RLS lui refuse déjà l'accès sans lui expliquer pourquoi). Signalé
   comme risque UX, pas corrigé dans ce chantier.
+
+# Plan V4 (2026-09-03) — Point d'entrée checkout pour T23 (partie 1 uniquement)
+
+Référence : `tasks.md` T23 (suivi explicite, non résolu par V3), `spec.md` §12. Cycle allégé
+`/clarify` → `/plan` (pas de nouveau `/specify` complet) vu qu'il s'agit d'un ajout à un chantier
+déjà avancé. Décisions ci-dessous actées avec l'utilisateur après vérification du code réel.
+
+## V4.0 Décisions actées
+
+1. **Un seul tier ("Pro") pour ce premier MVP** — un bouton "Passer Pro" dans le header du
+   dashboard (à côté de l'email/déconnexion), pas de nouvelle page de choix de tier. Elite suivra
+   plus tard sur le même modèle si besoin.
+2. **Pages `success`/`cancel` : statiques et minimalistes** — pas de vérification du statut réel
+   en base sur la page succès (le webhook `checkout.session.completed` peut arriver avec un léger
+   délai après la redirection Stripe) ; juste un message "abonnement en cours d'activation" et un
+   lien retour dashboard.
+3. **`refundPayment` : confirmé reporté** — aucun code ajouté pour cette partie dans ce chantier.
+   `T23` reste donc partiellement non fait après ce chantier (checkout câblé, refund toujours pas)
+   — dette explicite maintenue, cf. V3.0 point 2 pour la justification déjà actée (pas de rôle
+   staff plateforme).
+
+## V4.1 Découverte : le kit ne peut pas être appelé tel quel
+
+Deux lacunes trouvées en vérifiant le code réel avant d'écrire le plan — `createCheckoutSession`
+(T13) n'a jamais eu de vrai appelant, donc ces lacunes n'ont jamais été exercées :
+
+1. **`createCheckoutSession` n'a ni `success_url` ni `cancel_url`** — ces champs sont optionnels
+   dans les types TS du SDK Stripe, mais l'API Stripe réelle exige `success_url` pour une
+   Checkout Session en `ui_mode` par défaut (`hosted`) : un appel sans ce champ échoue côté
+   Stripe. **Extension du kit nécessaire avant de pouvoir câbler quoi que ce soit côté `web/`.**
+2. **`index.ts` n'expose que `createBillingKit(config)`**, dont `BillingKitConfig` exige
+   `stripeSecretKey` **et** `webhookSecret` **et** `onEvent` (tous requis). Pour déclencher un
+   checkout depuis une Server Action du dashboard (contexte sans rapport avec le webhook), il
+   faudrait fournir un `webhookSecret`/`onEvent` factices pour obtenir `.checkout` — signature
+   mal adaptée à cet usage. `web/` n'a par ailleurs plus la dépendance `stripe` (retirée
+   volontairement en T13) : impossible de construire une instance `Stripe` séparée côté `web/`
+   sans la réintroduire, ce qui annulerait ce nettoyage.
+
+## V4.2 Changements côté kit (`packages/billing-stripe-kit`)
+
+1. **`checkout.ts`** : ajouter `successUrl: string, cancelUrl: string` comme 3ᵉ/4ᵉ paramètres
+   positionnels requis (avant `metadata`/`options`, qui restent optionnels avec leurs défauts
+   actuels) — même style que `portal.ts` (`returnUrl` déjà positionnel). Signature finale :
+   `createCheckoutSession(priceId, accountId, successUrl, cancelUrl, metadata = {}, options = {})`.
+   Aucun appelant existant à casser (T13 n'a jamais été branché). Passthrough direct vers
+   `stripe.checkout.sessions.create({ success_url: successUrl, cancel_url: cancelUrl, ... })`.
+2. **`index.ts`** : `BillingKitConfig.webhookSecret` et `.onEvent` deviennent optionnels.
+   `createBillingKit({ stripeSecretKey })` seul reste pleinement fonctionnel pour
+   `.checkout`/`.portal`/`.refunds` ; `.webhook` n'a de sens que si les deux champs webhook sont
+   fournis (sinon lever une erreur explicite si `.webhook.handleRequest` est appelé sans eux,
+   plutôt qu'un `undefined` silencieux — à trancher précisément en tâche).
+
+## V4.3 Changements côté produit (`web/`)
+
+1. **Nouvelles variables d'environnement** (`.env.local.example`) :
+   - `STRIPE_PRICE_PRO_ID` — le Price ID Stripe réel (`price_...`) du tier Pro, à récupérer après
+     exécution de `stripe_bootstrap_billing.mjs` (qui crée les prix par `lookup_key`, pas par ID
+     fixe — aucun pont automatique n'existe entre les deux aujourd'hui, portée hors de ce
+     chantier : renseigné manuellement).
+   - `NEXT_PUBLIC_APP_URL` — origine absolue de l'app (ex. `http://localhost:3000` en dev),
+     nécessaire pour construire des `success_url`/`cancel_url` absolues comme l'exige Stripe.
+     Préféré à une dérivation depuis le header `Host` de la requête (évite de construire une URL
+     de redirection de paiement à partir d'un en-tête potentiellement falsifiable).
+2. **`web/lib/billing/checkout.ts`** (nouveau) : `startTenantCheckout(tenantId: string): Promise<string>`
+   — instancie `createBillingKit({ stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? "" })` (sans
+   `webhookSecret`/`onEvent`, cf. V4.2.2), appelle
+   `kit.checkout.createCheckoutSession(process.env.STRIPE_PRICE_PRO_ID ?? "", tenantId, `${appUrl}/billing/success`, `${appUrl}/billing/cancel`)`,
+   retourne `session.url` (erreur explicite si `null`, Stripe peut le renvoyer nul dans de rares
+   cas).
+3. **Bouton "Passer Pro"** : dans `web/app/dashboard/page.tsx`, header, à côté du bloc
+   email/déconnexion — un `<form>` + Server Action (`"use server"`) suivant le pattern déjà en
+   place pour la déconnexion (l.30-39/74-87), qui appelle `startTenantCheckout(activeTenantId)`
+   puis `redirect(url)`.
+4. **Pages `web/app/billing/success/page.tsx` et `web/app/billing/cancel/page.tsx`** (nouvelles,
+   minimalistes) : message statique + lien retour `/dashboard`. Pas de lecture DB (cf. V4.0.2).
+
+## V4.4 Sécurité / multi-tenant
+
+- `tenantId` passé à `startTenantCheckout` doit venir de `activeTenantId` résolu côté serveur
+  (déjà fait dans `dashboard/page.tsx` via `app_users.default_tenant_id`, jamais depuis une
+  valeur cliente) — même garantie que l'existant, pas de nouvelle surface d'usurpation.
+- Aucun changement RLS nécessaire : le checkout ne lit/écrit aucune table `tenants` directement,
+  seul le webhook (déjà existant) le fait après coup.
+
+## V4.5 Validation de non-régression
+
+- `tsc --noEmit` sur le kit et sur `web/`.
+- Test manuel (pas de test HTTP réel Stripe CLI dans ce chantier, cf. limite déjà documentée) :
+  vérifier que `createCheckoutSession` avec `successUrl`/`cancelUrl` produit toujours la même
+  requête `stripe.checkout.sessions.create` qu'avant pour les champs déjà couverts par les tests
+  V2 (`checkout.test.ts`) — ces tests doivent être mis à jour pour la nouvelle signature (nouveau
+  paramètre requis) plutôt que cassés silencieusement.
+- Pas de nouveau test `web/` par défaut (même choix qu'en V3 pour `markTenantPaymentFailed`,
+  cohérence de niveau d'effort) — à confirmer en tâche si le user veut relever le niveau ici.
+
+## V4.6 Risques / dette explicitement signalée
+
+- **`T23` reste partiellement non fait** : `refundPayment` toujours sans point d'entrée après ce
+  chantier — seule la partie checkout est résolue.
+- **Pont manuel entre `lookup_key` (bootstrap) et `STRIPE_PRICE_PRO_ID` (env)** — si le prix Pro
+  est recréé (nouveau `stripe_bootstrap_billing.mjs`), la variable d'env doit être mise à jour
+  manuellement, aucune automatisation ni validation au démarrage ne le détecte.
+- **Pas de vérification que le tenant n'est pas déjà Pro/Elite avant d'afficher le bouton** — le
+  dashboard ne lit actuellement ni `subscription_tier` ni `subscription_status` ; un tenant déjà
+  Pro verrait quand même "Passer Pro" et pourrait relancer un checkout (Stripe gérerait un
+  deuxième abonnement actif, pas une erreur, mais ce n'est pas le comportement voulu). Hors
+  périmètre explicite de ce chantier (le dashboard n'affiche aucune information d'abonnement
+  aujourd'hui) — à traiter si/quand une vraie page de gestion d'abonnement est construite.
+- **`BillingKitConfig` avec `webhookSecret`/`onEvent` optionnels** : si `.webhook.handleRequest`
+  est appelé sans ces champs, le comportement doit être une erreur explicite (à spécifier
+  précisément en tâche), pas un `undefined` silencieux qui romprait la vérification de signature.

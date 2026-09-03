@@ -318,3 +318,79 @@ ci-dessous) — voir T25 pour le statut spec.
 ## T25 — Mise à jour du statut de la spec
 - Après T24, mettre à jour le bandeau de statut en tête de `spec.md` et sa section dédiée avec
   le résultat réel (T22 résolu, T23 confirmé différé avec justification informée).
+
+---
+
+# Tâches V4 (2026-09-03) — Point d'entrée checkout (T23, partie 1)
+
+Référence : `plan.md` Plan V4 (décisions actées après clarification produit, cycle
+`/clarify`→`/plan` allégé). Ne résout que la partie checkout de `T23` ; `refundPayment` reste
+explicitement non fait (cf. `plan.md` V4.0 point 3).
+
+Statut : à faire.
+
+## T26 — `checkout.ts` : `successUrl`/`cancelUrl` requis
+- Nouvelle signature `createCheckoutSession(priceId, accountId, successUrl, cancelUrl, metadata = {}, options = {})`
+  (`plan.md` V4.2.1). Passthrough vers `stripe.checkout.sessions.create({ success_url: successUrl, cancel_url: cancelUrl, ... })`.
+- **Test** : mettre à jour `packages/billing-stripe-kit/src/checkout.test.ts` (T3/T18) pour la
+  nouvelle signature — vérifier que `success_url`/`cancel_url` apparaissent tels quels dans la
+  requête, sans casser silencieusement les assertions existantes sur les autres champs.
+- Dépend de rien (T13 n'a jamais eu d'appelant à préserver).
+
+## T27 — `index.ts` : `webhookSecret`/`onEvent` optionnels dans `BillingKitConfig`
+- `createBillingKit({ stripeSecretKey })` seul reste pleinement fonctionnel pour
+  `.checkout`/`.portal`/`.refunds` (`plan.md` V4.2.2).
+- `.webhook.handleRequest` appelé sans `webhookSecret`/`onEvent` fournis à la construction du kit
+  → erreur explicite immédiate (pas un comportement silencieusement dégradé) — exact message et
+  mécanisme à définir en l'écrivant (ex. lever dès `createBillingKit` si `.webhook` n'est pas
+  utilisable, ou lever à l'appel de `handleRequest`).
+- **Test** : `createBillingKit({ stripeSecretKey: "sk_test_mock" })` sans `webhookSecret`/`onEvent`
+  → `.checkout`/`.portal`/`.refunds` toujours des fonctions utilisables ; `.webhook.handleRequest`
+  (ou l'absence de `.webhook`) se comporte selon le mécanisme choisi, pas un crash TypeScript non
+  géré. Rejouer `regression.test.ts` (T20) pour confirmer qu'appeler `createBillingKit` avec la
+  config complète (webhook inclus) reste inchangé.
+- Dépend de rien.
+
+## T28 — `web/lib/billing/checkout.ts` : `startTenantCheckout(tenantId)`
+- Nouvelle fonction, instancie `createBillingKit({ stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? "" })`
+  (sans webhook, cf. T27), appelle `kit.checkout.createCheckoutSession` avec
+  `process.env.STRIPE_PRICE_PRO_ID`, `${process.env.NEXT_PUBLIC_APP_URL}/billing/success`,
+  `${process.env.NEXT_PUBLIC_APP_URL}/billing/cancel` (`plan.md` V4.3.2). Retourne `session.url`,
+  erreur explicite si `null`.
+- `web/.env.local.example` : ajouter `STRIPE_PRICE_PRO_ID` et `NEXT_PUBLIC_APP_URL` avec
+  commentaire sur leur provenance (le premier vient de `stripe_bootstrap_billing.mjs`, pont
+  manuel — cf. `plan.md` V4.6).
+- Dépend de T26, T27.
+
+## T29 — Bouton "Passer Pro" dans le dashboard
+- `web/app/dashboard/page.tsx` : `<form>` + Server Action dans le header, même pattern que le
+  bouton de déconnexion existant (l.30-39/74-87), appelle `startTenantCheckout(activeTenantId)`
+  puis `redirect(url)`.
+- `tenantId` = `activeTenantId` déjà résolu côté serveur dans la page (jamais une valeur cliente)
+  — cf. `plan.md` V4.4.
+- Dépend de T28.
+
+## T30 — Pages `web/app/billing/success` et `web/app/billing/cancel`
+- Deux pages minimalistes (`plan.md` V4.0.2) : message statique + lien retour `/dashboard`, pas
+  de lecture DB.
+- Dépend de rien (peuvent être faites en parallèle de T28/T29).
+
+## T31 — Validation de non-régression
+- `tsc --noEmit` sur le kit et sur `web/`.
+- Rejouer `checkout.test.ts` mis à jour (T26) et `regression.test.ts` (T27) — tous verts.
+- **Non fait, dette explicite** : pas de test HTTP réel via Stripe CLI pour ce nouveau flux
+  (même limite déjà documentée pour T13 bis/T20/T24) ; pas de nouveau test `web/` pour
+  `startTenantCheckout`/le bouton (choix explicite, même niveau qu'en T24).
+
+## T32 — Mise à jour du statut de la spec
+- Après T26–T31, mettre à jour le bandeau de statut en tête de `spec.md` et ajouter une section
+  dédiée avec le résultat réel (checkout câblé, `refundPayment` toujours non fait).
+
+---
+
+## Suivi explicite (mis à jour)
+
+- **`refundPayment` reste sans point d'entrée produit** après ce chantier V4 — reporté à un
+  chantier "rôles et permissions avancées" séparé (décision actée le 2026-09-03, cf. `plan.md`
+  V4.0 point 3). Ne pas le refaire apparaître comme "oublié" dans une revue future : c'est une
+  dette tracée, pas un manque de couverture.
