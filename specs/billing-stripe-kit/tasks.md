@@ -327,64 +327,68 @@ Référence : `plan.md` Plan V4 (décisions actées après clarification produit
 `/clarify`→`/plan` allégé). Ne résout que la partie checkout de `T23` ; `refundPayment` reste
 explicitement non fait (cf. `plan.md` V4.0 point 3).
 
-Statut : à faire.
+Statut : **T26–T32 implémentées le 2026-09-03.**
 
 ## T26 — `checkout.ts` : `successUrl`/`cancelUrl` requis
 - Nouvelle signature `createCheckoutSession(priceId, accountId, successUrl, cancelUrl, metadata = {}, options = {})`
   (`plan.md` V4.2.1). Passthrough vers `stripe.checkout.sessions.create({ success_url: successUrl, cancel_url: cancelUrl, ... })`.
-- **Test** : mettre à jour `packages/billing-stripe-kit/src/checkout.test.ts` (T3/T18) pour la
-  nouvelle signature — vérifier que `success_url`/`cancel_url` apparaissent tels quels dans la
-  requête, sans casser silencieusement les assertions existantes sur les autres champs.
+- **Statut : ✅ fait.** `packages/billing-stripe-kit/src/checkout.test.ts` mis à jour (T3/T18
+  rejoués avec la nouvelle signature) + nouveau test dédié vérifiant que `success_url`/
+  `cancel_url` apparaissent tels quels dans la requête.
 - Dépend de rien (T13 n'a jamais eu d'appelant à préserver).
 
 ## T27 — `index.ts` : `webhookSecret`/`onEvent` optionnels dans `BillingKitConfig`
 - `createBillingKit({ stripeSecretKey })` seul reste pleinement fonctionnel pour
   `.checkout`/`.portal`/`.refunds` (`plan.md` V4.2.2).
-- `.webhook.handleRequest` appelé sans `webhookSecret`/`onEvent` fournis à la construction du kit
-  → erreur explicite immédiate (pas un comportement silencieusement dégradé) — exact message et
-  mécanisme à définir en l'écrivant (ex. lever dès `createBillingKit` si `.webhook` n'est pas
-  utilisable, ou lever à l'appel de `handleRequest`).
-- **Test** : `createBillingKit({ stripeSecretKey: "sk_test_mock" })` sans `webhookSecret`/`onEvent`
-  → `.checkout`/`.portal`/`.refunds` toujours des fonctions utilisables ; `.webhook.handleRequest`
-  (ou l'absence de `.webhook`) se comporte selon le mécanisme choisi, pas un crash TypeScript non
-  géré. Rejouer `regression.test.ts` (T20) pour confirmer qu'appeler `createBillingKit` avec la
-  config complète (webhook inclus) reste inchangé.
+- **Statut : ✅ fait.** `.webhook.handleRequest` appelé sans `webhookSecret`/`onEvent` fournis à
+  la construction lève une erreur explicite immédiate
+  (`"createBillingKit: webhookSecret et onEvent sont requis pour utiliser .webhook.handleRequest(...)"`) —
+  mécanisme choisi : un stub `.webhook` dont `handleRequest` est `async` et lève systématiquement,
+  plutôt qu'un `.webhook` absent (qui aurait produit un `TypeError` confus côté appelant).
+- **Test** : nouveau test dans `regression.test.ts` — `createBillingKit({ stripeSecretKey })`
+  sans `webhookSecret`/`onEvent` → `.checkout`/`.portal`/`.refunds` toujours utilisables,
+  `.webhook.handleRequest(...)` rejette avec le message attendu. Le test T20 existant (config
+  complète avec webhook) rejoué sans modification.
 - Dépend de rien.
 
 ## T28 — `web/lib/billing/checkout.ts` : `startTenantCheckout(tenantId)`
-- Nouvelle fonction, instancie `createBillingKit({ stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? "" })`
+- **Statut : ✅ fait.** Instancie `createBillingKit({ stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? "" })`
   (sans webhook, cf. T27), appelle `kit.checkout.createCheckoutSession` avec
   `process.env.STRIPE_PRICE_PRO_ID`, `${process.env.NEXT_PUBLIC_APP_URL}/billing/success`,
   `${process.env.NEXT_PUBLIC_APP_URL}/billing/cancel` (`plan.md` V4.3.2). Retourne `session.url`,
   erreur explicite si `null`.
-- `web/.env.local.example` : ajouter `STRIPE_PRICE_PRO_ID` et `NEXT_PUBLIC_APP_URL` avec
+- `web/.env.local.example` : `STRIPE_PRICE_PRO_ID` et `NEXT_PUBLIC_APP_URL` ajoutées avec
   commentaire sur leur provenance (le premier vient de `stripe_bootstrap_billing.mjs`, pont
   manuel — cf. `plan.md` V4.6).
 - Dépend de T26, T27.
 
 ## T29 — Bouton "Passer Pro" dans le dashboard
-- `web/app/dashboard/page.tsx` : `<form>` + Server Action dans le header, même pattern que le
-  bouton de déconnexion existant (l.30-39/74-87), appelle `startTenantCheckout(activeTenantId)`
-  puis `redirect(url)`.
+- **Statut : ✅ fait.** `web/app/dashboard/page.tsx` : `<form>` + Server Action dans le header,
+  même pattern que le bouton de déconnexion existant, appelle
+  `startTenantCheckout(activeTenantId)` puis `redirect(url)`.
 - `tenantId` = `activeTenantId` déjà résolu côté serveur dans la page (jamais une valeur cliente)
   — cf. `plan.md` V4.4.
 - Dépend de T28.
 
 ## T30 — Pages `web/app/billing/success` et `web/app/billing/cancel`
-- Deux pages minimalistes (`plan.md` V4.0.2) : message statique + lien retour `/dashboard`, pas
-  de lecture DB.
+- **Statut : ✅ fait.** Deux pages statiques (`plan.md` V4.0.2) : message + lien retour
+  `/dashboard`, aucune lecture DB. Confirmées générées en statique par `next build --turbopack`.
 - Dépend de rien (peuvent être faites en parallèle de T28/T29).
 
 ## T31 — Validation de non-régression
-- `tsc --noEmit` sur le kit et sur `web/`.
-- Rejouer `checkout.test.ts` mis à jour (T26) et `regression.test.ts` (T27) — tous verts.
+- **Statut : ✅ fait.** `tsc --noEmit` propre sur le kit et sur `web/`. `next build --turbopack`
+  exécuté avec succès (10 routes générées, `/billing/success`/`/billing/cancel` en statique,
+  `/dashboard` compile avec la nouvelle Server Action). `checkout.test.ts`/`regression.test.ts`
+  rejoués — **23/23 tests verts** sur le kit.
 - **Non fait, dette explicite** : pas de test HTTP réel via Stripe CLI pour ce nouveau flux
   (même limite déjà documentée pour T13 bis/T20/T24) ; pas de nouveau test `web/` pour
-  `startTenantCheckout`/le bouton (choix explicite, même niveau qu'en T24).
+  `startTenantCheckout`/le bouton (choix explicite, même niveau qu'en T24) ; pas de vérification
+  qu'un tenant déjà Pro/Elite ne revoit pas le bouton (le dashboard n'affiche aucune information
+  d'abonnement aujourd'hui, cf. `plan.md` V4.6).
 
 ## T32 — Mise à jour du statut de la spec
-- Après T26–T31, mettre à jour le bandeau de statut en tête de `spec.md` et ajouter une section
-  dédiée avec le résultat réel (checkout câblé, `refundPayment` toujours non fait).
+- **Statut : ✅ fait.** Bandeau de statut en tête de `spec.md` et nouvelle section §13 avec le
+  résultat réel (checkout câblé, `refundPayment` toujours non fait).
 
 ---
 

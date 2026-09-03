@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { LogOut, TrendingUp, ShieldAlert, Zap } from "lucide-react";
+import { CreditCard, LogOut, TrendingUp, ShieldAlert, Zap } from "lucide-react";
 import AlertsDashboard from "@/components/AlertsDashboard";
+import { startTenantCheckout } from "@/lib/billing/checkout";
 
 export default async function DashboardPage() {
   const supabase = await createSupabaseServerClient();
@@ -71,6 +72,19 @@ export default async function DashboardPage() {
             <span className="text-sm text-gray-500 hidden sm:inline-block">
               {user.email}
             </span>
+            <form>
+              <button
+                formAction={async () => {
+                  "use server";
+                  const url = await startTenantCheckout(activeTenantId);
+                  redirect(url);
+                }}
+                className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition-colors"
+              >
+                <CreditCard className="h-4 w-4" />
+                Passer Pro
+              </button>
+            </form>
             <form action="/auth/actions" method="post">
               <button
                 formAction={async () => {

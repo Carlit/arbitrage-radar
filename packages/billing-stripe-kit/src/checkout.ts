@@ -9,6 +9,8 @@ export function createCheckoutModule(stripe: Stripe) {
   async function createCheckoutSession(
     priceId: string,
     accountId: string,
+    successUrl: string,
+    cancelUrl: string,
     metadata: Record<string, string> = {},
     options: CreateCheckoutSessionOptions = {},
   ): Promise<Stripe.Checkout.Session> {
@@ -24,6 +26,8 @@ export function createCheckoutModule(stripe: Stripe) {
       customer: customer.id,
       client_reference_id: accountId,
       line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
       metadata,
       ...(options.trialPeriodDays !== undefined
         ? { subscription_data: { trial_period_days: options.trialPeriodDays } }

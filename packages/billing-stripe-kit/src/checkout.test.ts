@@ -4,11 +4,14 @@ import assert from "node:assert/strict";
 import { createCheckoutModule } from "./checkout.ts";
 import { createMockStripe } from "./test-helpers/mock-stripe.ts";
 
+const SUCCESS_URL = "https://app.example.com/billing/success";
+const CANCEL_URL = "https://app.example.com/billing/cancel";
+
 test("T3/V1 (rejoué) — createCheckoutSession sans options : Customer + session conformes", async () => {
   const { stripe, customersCreate, checkoutSessionsCreate } = createMockStripe();
   const { createCheckoutSession } = createCheckoutModule(stripe);
 
-  const session = await createCheckoutSession("price_1", "acct_1");
+  const session = await createCheckoutSession("price_1", "acct_1", SUCCESS_URL, CANCEL_URL);
 
   assert.equal(customersCreate.mock.calls.length, 1);
   assert.deepEqual(customersCreate.mock.calls[0].arguments[0], {
@@ -22,16 +25,29 @@ test("T3/V1 (rejoué) — createCheckoutSession sans options : Customer + sessio
     customer: "cus_mock",
     client_reference_id: "acct_1",
     line_items: [{ price: "price_1", quantity: 1 }],
+    success_url: SUCCESS_URL,
+    cancel_url: CANCEL_URL,
     metadata: {},
   });
   assert.equal(session.id, "cs_mock");
 });
 
-test("T18 — non-régression : createCheckoutSession('price_1', 'acct_1', {}) sans options est identique à l'appel V1", async () => {
+test("T26 — successUrl/cancelUrl transmis tels quels dans la requête", async () => {
   const { stripe, checkoutSessionsCreate } = createMockStripe();
   const { createCheckoutSession } = createCheckoutModule(stripe);
 
-  await createCheckoutSession("price_1", "acct_1", {});
+  await createCheckoutSession("price_1", "acct_1", SUCCESS_URL, CANCEL_URL);
+
+  const params = checkoutSessionsCreate.mock.calls[0].arguments[0] as Record<string, unknown>;
+  assert.equal(params.success_url, SUCCESS_URL);
+  assert.equal(params.cancel_url, CANCEL_URL);
+});
+
+test("T18 — non-régression : createCheckoutSession(..., {}) sans options est identique à l'appel V1", async () => {
+  const { stripe, checkoutSessionsCreate } = createMockStripe();
+  const { createCheckoutSession } = createCheckoutModule(stripe);
+
+  await createCheckoutSession("price_1", "acct_1", SUCCESS_URL, CANCEL_URL, {});
 
   const params = checkoutSessionsCreate.mock.calls[0].arguments[0] as Record<string, unknown>;
   assert.ok(!("subscription_data" in params), "subscription_data ne doit pas apparaître sans trialPeriodDays");
@@ -42,7 +58,7 @@ test("T18 — options.trialPeriodDays seul : subscription_data.trial_period_days
   const { stripe, checkoutSessionsCreate } = createMockStripe();
   const { createCheckoutSession } = createCheckoutModule(stripe);
 
-  await createCheckoutSession("price_1", "acct_1", {}, { trialPeriodDays: 14 });
+  await createCheckoutSession("price_1", "acct_1", SUCCESS_URL, CANCEL_URL, {}, { trialPeriodDays: 14 });
 
   const params = checkoutSessionsCreate.mock.calls[0].arguments[0] as Record<string, unknown>;
   assert.deepEqual(params.subscription_data, { trial_period_days: 14 });
@@ -54,7 +70,7 @@ test("T18 — options.discounts seul : discounts transmis tel quel, subscription
   const { createCheckoutSession } = createCheckoutModule(stripe);
 
   const discounts = [{ coupon: "XYZ" }];
-  await createCheckoutSession("price_1", "acct_1", {}, { discounts });
+  await createCheckoutSession("price_1", "acct_1", SUCCESS_URL, CANCEL_URL, {}, { discounts });
 
   const params = checkoutSessionsCreate.mock.calls[0].arguments[0] as Record<string, unknown>;
   assert.deepEqual(params.discounts, discounts);
@@ -66,7 +82,7 @@ test("T18 — trialPeriodDays et discounts ensemble : les deux présents simulta
   const { createCheckoutSession } = createCheckoutModule(stripe);
 
   const discounts = [{ coupon: "XYZ" }];
-  await createCheckoutSession("price_1", "acct_1", {}, { trialPeriodDays: 14, discounts });
+  await createCheckoutSession("price_1", "acct_1", SUCCESS_URL, CANCEL_URL, {}, { trialPeriodDays: 14, discounts });
 
   const params = checkoutSessionsCreate.mock.calls[0].arguments[0] as Record<string, unknown>;
   assert.deepEqual(params.subscription_data, { trial_period_days: 14 });

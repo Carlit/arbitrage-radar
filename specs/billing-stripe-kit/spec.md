@@ -4,11 +4,13 @@
 > détail en §8 et §11. **T22 résolu (Plan V3, §12)** : `payment.failed` câblé côté
 > `web/app/api/webhook/stripe/route.ts`, passe `tenants.subscription_status` à `'past_due'`
 > (sans période de grâce — l'entitlement RLS ne l'accorde qu'à `trialing`/`active`, inchangé).
-> **`T23` reste une dette ouverte non résolue, avec justification informée** (pas un oubli) :
-> `refundPayment` n'a aucune UI/route admin où exister dans le produit actuel, et les options de
-> checkout (`trialPeriodDays`/`discounts`) n'ont pas de flux d'abonnement où s'insérer
-> (`createCheckoutSession` n'a toujours aucun appelant dans `web/`). Détail en §12 et
-> `plan.md` V3.0.
+> **`T23` partiellement résolu (Plan V4, §13)** : le checkout self-serve est câblé (bouton
+> "Passer Pro" dans le dashboard → `createCheckoutSession` → Stripe Checkout hébergé → pages
+> `/billing/success`/`/billing/cancel`). **`refundPayment` reste une dette ouverte non résolue,
+> avec justification informée** (pas un oubli) : aucune UI/route admin n'existe dans le produit
+> actuel, et le seul rôle du schéma (`app_role`) est par tenant, pas un rôle staff plateforme —
+> reporté explicitement à un futur chantier "rôles et permissions avancées". Détail en §12/§13 et
+> `plan.md` V3.0/V4.0.
 
 ## 1. Quoi (Le besoin)
 
@@ -278,3 +280,42 @@ store d'idempotence. Émet un événement générique `payment.failed` vers `onE
   jamais eu de `supabase/config.toml`, `supabase init`/`start` jugé disproportionné pour ce
   changement d'une colonne) ; pas de test HTTP réel via Stripe CLI. `T23` reste non fait dans
   son intégralité (`refundPayment`, options de checkout) — cf. point 12.2/12.3 ci-dessus.
+
+## 13. Statut (V4 — point d'entrée checkout, T23 partie 1)
+
+- Décisions actées avec l'utilisateur le 2026-09-03, chacune vérifiée sur le code réel avant
+  d'être tranchée (détail en `plan.md` Plan V4, `tasks.md` Tâches V4) : un seul tier "Pro" pour
+  ce premier MVP, pages `success`/`cancel` statiques sans vérification live, `refundPayment`
+  confirmé reporté à un futur chantier rôles/permissions.
+- **Deux extensions du kit nécessaires, trouvées en vérifiant le code avant d'écrire le plan**
+  (T13 n'avait jamais eu de vrai appelant, donc jamais exercées) :
+  - `checkout.ts` : `createCheckoutSession` prend désormais `successUrl`/`cancelUrl` comme 3ᵉ/4ᵉ
+    paramètres positionnels **requis** (`metadata`/`options` restent optionnels après). L'API
+    Stripe réelle exige `success_url` en `ui_mode` par défaut (hosted) — absent jusqu'ici, un
+    appel réel aurait échoué côté Stripe malgré des types TS qui les déclarent optionnels.
+  - `index.ts` : `BillingKitConfig.webhookSecret`/`.onEvent` sont désormais optionnels.
+    `createBillingKit({ stripeSecretKey })` seul reste pleinement utilisable pour
+    `.checkout`/`.portal`/`.refunds` ; `.webhook.handleRequest` appelé sans ces champs lève une
+    erreur explicite (`"webhookSecret et onEvent sont requis..."`), jamais un `undefined`
+    silencieux.
+- **Implémenté (T28–T30)** :
+  - `web/lib/billing/checkout.ts` — `startTenantCheckout(tenantId)`, instancie un kit
+    "checkout seul" (sans webhook), résout `STRIPE_PRICE_PRO_ID`/`NEXT_PUBLIC_APP_URL` en
+    variables d'environnement, retourne l'URL de la Checkout Session.
+  - `web/app/dashboard/page.tsx` — bouton "Passer Pro" dans le header (Server Action, même
+    pattern que la déconnexion existante), `tenantId` = `activeTenantId` résolu côté serveur.
+  - `web/app/billing/success/page.tsx` et `web/app/billing/cancel/page.tsx` — pages statiques,
+    aucune lecture DB.
+- **Validation** : `tsc --noEmit` propre sur le kit et sur `web/`. `next build --turbopack`
+  exécuté avec succès (`/billing/success`, `/billing/cancel` générées en statique, `/dashboard`
+  compile avec la nouvelle Server Action). `checkout.test.ts` mis à jour pour la nouvelle
+  signature (nouveau test dédié `successUrl`/`cancelUrl`) ; nouveau test pour
+  `createBillingKit` sans `webhookSecret`/`onEvent` (`regression.test.ts`). **23/23 tests
+  verts** sur le kit.
+- **Non fait, dette explicite** : pas de test HTTP réel via Stripe CLI pour ce nouveau flux
+  (même limite déjà documentée) ; pas de nouveau test `web/` pour `startTenantCheckout`/le
+  bouton (même niveau d'effort qu'en T24) ; pas de vérification que le tenant n'est pas déjà
+  Pro/Elite avant d'afficher le bouton (le dashboard n'affiche aucune information d'abonnement
+  aujourd'hui) ; pont manuel entre le `lookup_key` de `stripe_bootstrap_billing.mjs` et la
+  variable d'env `STRIPE_PRICE_PRO_ID`. **`refundPayment` reste sans point d'entrée produit** —
+  `T23` n'est donc résolu que pour sa partie checkout.

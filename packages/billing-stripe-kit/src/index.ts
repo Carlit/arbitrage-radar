@@ -8,8 +8,8 @@ import type { IdempotencyStore, OnBillingEvent } from "./types";
 
 export interface BillingKitConfig {
   stripeSecretKey: string;
-  webhookSecret: string;
-  onEvent: OnBillingEvent;
+  webhookSecret?: string;
+  onEvent?: OnBillingEvent;
   idempotencyStore?: IdempotencyStore;
 }
 
@@ -18,11 +18,22 @@ export function createBillingKit(config: BillingKitConfig) {
     apiVersion: "2026-08-26.dahlia",
   });
 
+  const webhook =
+    config.webhookSecret !== undefined && config.onEvent !== undefined
+      ? createWebhookModule(stripe, config.webhookSecret, config.onEvent, config.idempotencyStore)
+      : {
+          async handleRequest(): Promise<void> {
+            throw new Error(
+              "createBillingKit: webhookSecret et onEvent sont requis pour utiliser .webhook.handleRequest(...) — non fournis à la construction du kit.",
+            );
+          },
+        };
+
   return {
     checkout: createCheckoutModule(stripe),
     portal: createPortalModule(stripe),
     refunds: createRefundsModule(stripe),
-    webhook: createWebhookModule(stripe, config.webhookSecret, config.onEvent, config.idempotencyStore),
+    webhook,
   };
 }
 

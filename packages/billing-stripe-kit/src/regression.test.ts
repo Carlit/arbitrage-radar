@@ -35,6 +35,20 @@ test("T20 — createBillingKit assemble toujours checkout/portal/refunds/webhook
   assert.equal(typeof kit.webhook.handleRequest, "function");
 });
 
+test("T27 — createBillingKit({ stripeSecretKey }) sans webhookSecret/onEvent : checkout/portal/refunds utilisables, .webhook.handleRequest lève une erreur explicite", async () => {
+  const kit = createBillingKit({ stripeSecretKey: "sk_test_mock" });
+
+  assert.equal(typeof kit.checkout.createCheckoutSession, "function");
+  assert.equal(typeof kit.portal.createPortalSession, "function");
+  assert.equal(typeof kit.refunds.refundPayment, "function");
+  assert.equal(typeof kit.webhook.handleRequest, "function");
+
+  await assert.rejects(
+    () => kit.webhook.handleRequest("{}", "sig"),
+    /webhookSecret et onEvent sont requis/,
+  );
+});
+
 function createInMemoryStore() {
   const seen = new Set<string>();
   return {
