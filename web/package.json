@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "billing-stripe-kit": "file:../packages/billing-stripe-kit",
+    "billing-stripe-kit": "file:../../billing-stripe-kit",
     "@radix-ui/react-select": "^2.3.7",
     "@radix-ui/react-slot": "^1.3.3",
     "@supabase/ssr": "^0.5.2",
