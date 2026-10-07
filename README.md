@@ -2,7 +2,7 @@
 
 ## Vue d'ensemble
 
-Ce dépôt documente l'état actuel du MVP SaaS de radar d'arbitrage de prix. À ce stade, le backend est gelé et le dépôt contient principalement des artefacts d'architecture, le schéma SQL Supabase, les scripts de facturation Stripe, ainsi qu'un POC Python capable de simuler un marché, détecter des anomalies et écrire les alertes dans Supabase.
+Ce dépôt contient le MVP SaaS d'arbitrage : une application Next.js, Supabase/Postgres avec RLS, l'intégration Stripe côté produit et un POC Python de détection. La mécanique Stripe générique est externalisée dans le repo `billing-stripe-kit` ; ce dépôt ne conserve que l'adaptation métier Arbitrage Radar.
 
 Le produit visé est un micro-SaaS qui détecte des anomalies de prix inter-plateformes, qualifie les opportunités d'arbitrage et revend l'accès aux alertes via des abonnements `Free`, `Pro` et `Elite`.
 
@@ -15,7 +15,7 @@ La cible technique retenue est la suivante :
 | Couche | Choix | Rôle |
 |---|---|---|
 | Frontend | `Next.js 15`, `React 19`, `TypeScript`, `Tailwind CSS 4`, `shadcn/ui` | Interface SaaS, dashboard, gestion du compte et des abonnements |
-| API / services | `Node.js 22`, `Fastify`, `TypeScript`, `Zod` | API applicative, webhooks, orchestration backend |
+| API / services | `Next.js 15` route handlers + `billing-stripe-kit` | API applicative, webhook Stripe, orchestration backend |
 | Base de données | `Supabase Postgres` | Stockage transactionnel, auth, RLS, persistance des alertes |
 | Auth / multi-tenant | `Supabase Auth` + politiques `RLS` | Isolation stricte des données par tenant |
 | Facturation | `Stripe Billing` | Produits, prix, abonnements, événements de cycle de vie |
@@ -93,10 +93,9 @@ Le dossier contient actuellement les fichiers suivants :
 |---|---|
 | `.gitignore` | Fichier d'ignorés Git existant dans le dépôt |
 | `mvp_blueprint.md` | Note d'architecture du MVP, stack retenue, schéma conceptuel et logique de pipeline |
-| `supabase_schema.sql` | Schéma SQL principal pour Supabase PostgreSQL avec tables, fonctions, triggers et politiques RLS |
-| `supabase_schema_ready.sql` | Copie du schéma SQL principal pour contourner un problème d'aperçu rencontré plus tôt |
+| `supabase/migrations/` | Migrations Supabase PostgreSQL, RLS et tables applicatives |
 | `stripe_bootstrap_billing.mjs` | Script Node.js qui crée ou retrouve les produits et prix Stripe `Free`, `Pro`, `Elite` |
-| `stripe_webhook_fastify.mjs` | Serveur Fastify minimal exposant le webhook Stripe signé et synchronisant les statuts d'abonnement vers `tenants` via Supabase Admin |
+| `web/app/api/webhook/stripe/route.ts` | Webhook Stripe de l'application, basé sur `billing-stripe-kit` et les adaptateurs métier Supabase |
 | `.env.billing.example` | Exemple de variables d'environnement nécessaires aux scripts Stripe |
 | `arbitrage_radar_poc.py` | POC Python de simulation de marché, détection d'anomalies, seed du référentiel Supabase et insertion des alertes dans `market_alerts` |
 | `requirements-poc.txt` | Dépendances Python minimales du POC (`numpy`, `polars`, `supabase`) |
@@ -128,22 +127,11 @@ Ce script :
 
 Il est conçu pour être idempotent au niveau logique de bootstrap.
 
-### `stripe_webhook_fastify.mjs`
+### Facturation Stripe
 
-Ce script :
+La logique Stripe générique (Checkout, portail, remboursements, vérification de signature, mapping des événements et contrat d'idempotence) vit dans le repo indépendant `Carlit/billing-stripe-kit`.
 
-- démarre un serveur Fastify
-- capte le corps brut HTTP pour vérifier la signature Stripe
-- vérifie `stripe-signature` avec `STRIPE_WEBHOOK_SECRET`
-- traite `customer.subscription.created`
-- traite `customer.subscription.updated`
-- traite `customer.subscription.deleted`
-- met à jour `tenants.stripe_subscription_id`
-- met à jour `tenants.subscription_tier`
-- met à jour `tenants.subscription_status`
-- met à jour `tenants.subscription_current_period_ends_at`
-
-Le mapping du niveau d'abonnement se fait d'abord via `price.metadata.app_tier`, puis via `lookup_key` en repli.
+Dans ce dépôt, `web/` ne conserve que la logique produit : liaison tenant ↔ Customer Stripe, mapping `Free` / `Pro` / `Elite`, synchronisation Supabase et stockage des événements traités. `stripe_bootstrap_billing.mjs` reste ici car la définition des offres et des prix est spécifique à Arbitrage Radar.
 
 ### `arbitrage_radar_poc.py`
 
@@ -238,13 +226,9 @@ Résultat attendu :
 - insertion des alertes détectées dans `market_alerts`
 - affichage console d'un résumé des opportunités retenues
 
-### 4. Installer les dépendances Node pour Stripe
+### 4. Installer l'application web et le kit Stripe
 
-Il n'y a pas encore de `package.json` dans ce dépôt. À ce stade, l'installation se fait manuellement dans le dossier si vous souhaitez tester les scripts :
-
-```bash
-npm install stripe fastify @fastify/raw-body @supabase/supabase-js dotenv
-```
+Le kit Stripe est consommé comme dépendance locale depuis un clone frère de ce dépôt. Voir `packages/billing-stripe-kit/README.md` pour le chemin attendu, puis installer les dépendances dans le kit et dans `web/`.
 
 ### 5. Initialiser les produits et prix Stripe
 
@@ -260,17 +244,13 @@ Résultat attendu :
 
 ### 6. Démarrer le webhook Stripe localement
 
-```bash
-node stripe_webhook_fastify.mjs
-```
-
-Le webhook expose :
+Le webhook fait partie de l'application Next.js :
 
 ```text
-POST /webhooks/stripe
+POST /api/webhook/stripe
 ```
 
-Il faut ensuite relayer les événements Stripe vers ce point d'entrée, par exemple avec le CLI Stripe si vous l'utilisez dans votre environnement local.
+Lancer `web/` puis relayer les événements Stripe vers cette route (par exemple avec Stripe CLI en environnement de test).
 
 ## Dépendances actuellement connues
 
@@ -286,29 +266,16 @@ supabase>=2.7
 
 ### Node
 
-Nécessaires aux scripts existants :
-
-- `stripe`
-- `fastify`
-- `@fastify/raw-body`
-- `@supabase/supabase-js`
-- `dotenv`
+Les dépendances applicatives sont déclarées dans `web/package.json`. La dépendance Stripe générique est portée par `billing-stripe-kit`.
 
 ## Limitations actuelles
 
-- aucune interface web n'est encore implémentée dans ce dépôt
-- aucun `package.json`, aucune app `Next.js` ni service `Fastify` complet n'ont encore été générés
-- le webhook Stripe et le bootstrap sont livrés comme scripts autonomes
+- l'interface Next.js et le webhook Stripe existent déjà dans `web/`
+- le kit Stripe générique est un repo séparé et doit être cloné à côté de ce dépôt avec la configuration actuelle
+- `stripe_bootstrap_billing.mjs` reste un script autonome spécifique au produit
 - le POC Python écrit dans `market_alerts`, mais ne gère pas encore l'attribution vers `tenant_alert_access`
 - le contrôle RLS est documenté et modélisé, mais le test E2E avec tenants réels n'est pas encore documenté dans ce dépôt
 
 ## Prochaine étape naturelle
 
-Quand le gel backend sera levé, la suite logique sera :
-
-- générer le squelette `Next.js`
-- exposer les routes applicatives de lecture sécurisée
-- brancher la lecture d'alertes via RLS
-- connecter l'interface de pricing et de provisioning Stripe
-
-Pour l'instant, ce dépôt doit être considéré comme une base documentaire et technique de préparation, avec un schéma de données prêt, des scripts Stripe prêts à tester et un pipeline POC Python capable d'alimenter Supabase.
+La suite doit maintenant porter sur les validations E2E réelles (Stripe/Supabase), le durcissement du parcours d'abonnement et le raccordement progressif du moteur de détection au produit, sans réintroduire de logique Stripe générique dans ce dépôt.
